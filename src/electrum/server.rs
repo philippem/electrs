@@ -517,9 +517,12 @@ impl Connection {
     fn send_values(&mut self, values: &[Value]) -> Result<()> {
         for value in values {
             let line = value.to_string() + "\n";
-            self.stream
-                .write_all(line.as_bytes())
-                .chain_err(|| format!("failed to send {}", value))?;
+            match self.stream.write_all(line.as_bytes()) {
+                Ok(_) => {}
+                Err(err) => {
+                    error!("Failed to send {}, error: {}", value, err);
+                }
+            }
         }
         Ok(())
     }
