@@ -85,6 +85,14 @@ impl<T> Channel<T> {
     }
 }
 
+pub fn log_fn_duration(fn_name: &str, duration: u128) {
+    let log = json!({
+        "fn_name": fn_name,
+        "duration_micros": duration,
+    });
+    println!("{}", log);
+}
+
 pub fn spawn_thread<F, T>(name: &str, f: F) -> thread::JoinHandle<T>
 where
     F: FnOnce() -> T,

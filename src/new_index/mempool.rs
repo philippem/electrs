@@ -21,7 +21,7 @@ use crate::new_index::{
     SpendingInfo, SpendingInput, TxHistoryInfo, Utxo,
 };
 use crate::util::fees::{make_fee_histogram, TxFeeInfo};
-use crate::util::{extract_tx_prevouts, full_hash, has_prevout, is_spendable, Bytes};
+use crate::util::{extract_tx_prevouts, full_hash, has_prevout, is_spendable, Bytes, log_fn_duration};
 
 #[cfg(feature = "liquid")]
 use crate::elements::asset;
@@ -120,17 +120,23 @@ impl Mempool {
     }
 
     pub fn get_tx_fee(&self, txid: &Txid) -> Option<u64> {
-        Some(self.feeinfo.get(txid)?.fee)
+        let t = Instant::now();
+        let res = Some(self.feeinfo.get(txid)?.fee);
+        log_fn_duration("mempool::get_tx_fee", t.elapsed().as_micros());
+        res
     }
 
     pub fn has_unconfirmed_parents(&self, txid: &Txid) -> bool {
+        let t = Instant::now();
         let tx = match self.txstore.get(txid) {
             Some(tx) => tx,
             None => return false,
         };
-        tx.input
+        let res = tx.input
             .iter()
-            .any(|txin| self.txstore.contains_key(&txin.previous_output.txid))
+            .any(|txin| self.txstore.contains_key(&txin.previous_output.txid));
+        log_fn_duration("mempool::has_unconfirmed_parents", t.elapsed().as_micros());
+        res
     }
 
     pub fn history(&self, scripthash: &[u8], limit: usize) -> Vec<Transaction> {
@@ -152,19 +158,22 @@ impl Mempool {
     }
 
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<Txid> {
+        let t  = Instant::now();
         let _timer = self
             .latency
             .with_label_values(&["history_txids"])
             .start_timer();
-        match self.history.get(scripthash) {
+        let res = match self.history.get(scripthash) {
             None => vec![],
             Some(entries) => entries
                 .iter()
                 .map(|e| e.get_txid())
                 .unique()
                 .take(limit)
-                .collect(),
-        }
+                .collect()
+        };
+        log_fn_duration("mempool::history_txids", t.elapsed().as_micros());
+        res
     }
 
     pub fn utxo(&self, scripthash: &[u8]) -> Vec<Utxo> {
@@ -297,6 +306,7 @@ impl Mempool {
     }
 
     fn add(&mut self, txs: Vec<Transaction>) {
+        let t = Instant::now();
         self.delta
             .with_label_values(&["add"])
             .observe(txs.len() as f64);
@@ -395,6 +405,7 @@ impl Mempool {
                 &mut self.asset_issuance,
             );
         }
+        log_fn_duration("mempool::add", t.elapsed().as_micros());
     }
 
     pub fn lookup_txo(&self, outpoint: &OutPoint) -> Result<TxOut> {
@@ -404,6 +415,7 @@ impl Mempool {
     }
 
     pub fn lookup_txos(&self, outpoints: &BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
+        let t = Instant::now();
         let _timer = self
             .latency
             .with_label_values(&["lookup_txos"])
@@ -425,6 +437,7 @@ impl Mempool {
 
         let mut txos = confirmed_txos;
         txos.extend(mempool_txos);
+        log_fn_duration("mempool::lookup_txos", t.elapsed().as_micros());
         Ok(txos)
     }
 

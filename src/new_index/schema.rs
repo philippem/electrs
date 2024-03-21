@@ -20,6 +20,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use crate::chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
@@ -28,10 +29,7 @@ use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramTimer, HistogramVec, MetricOpts, Metrics};
-use crate::util::{
-    bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta,
-    BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr,
-};
+use crate::util::{bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta, BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr, log_fn_duration};
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
 use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
@@ -453,10 +451,13 @@ impl ChainQuery {
     }
 
     pub fn history_iter_scan(&self, code: u8, hash: &[u8], start_height: usize) -> ScanIterator {
-        self.store.history_db.iter_scan_from(
+        let t = Instant::now();
+        let res = self.store.history_db.iter_scan_from(
             &TxHistoryRow::filter(code, &hash[..]),
             &TxHistoryRow::prefix_height(code, &hash[..], start_height as u32),
-        )
+        );
+        log_fn_duration("chainquery::history_iter_scan", t.elapsed().as_micros());
+        res
     }
     fn history_iter_scan_reverse(&self, code: u8, hash: &[u8]) -> ReverseScanIterator {
         self.store.history_db.iter_scan_reverse(
@@ -510,18 +511,24 @@ impl ChainQuery {
     }
 
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
+        let t = Instant::now();
         // scripthash lookup
-        self._history_txids(b'H', scripthash, limit)
+        let res = self._history_txids(b'H', scripthash, limit);
+        log_fn_duration("chainquery::history_txids", t.elapsed().as_micros());
+        res
     }
 
     fn _history_txids(&self, code: u8, hash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
+        let t = Instant::now();
         let _timer = self.start_timer("history_txids");
-        self.history_iter_scan(code, hash, 0)
+        let res = self.history_iter_scan(code, hash, 0)
             .map(|row| TxHistoryRow::from_row(row).get_txid())
             .unique()
             .filter_map(|txid| self.tx_confirming_block(&txid).map(|b| (txid, b)))
             .take(limit)
-            .collect()
+            .collect();
+        log_fn_duration("chainquery::_history_txids", t.elapsed().as_micros());
+        res
     }
 
     // TODO: avoid duplication with stats/stats_delta?
@@ -865,8 +872,11 @@ impl ChainQuery {
     }
 
     pub fn lookup_avail_txos(&self, outpoints: &BTreeSet<OutPoint>) -> HashMap<OutPoint, TxOut> {
+        let t = Instant::now();
         let _timer = self.start_timer("lookup_available_txos");
-        lookup_txos(&self.store.txstore_db, outpoints, true)
+        let res = lookup_txos(&self.store.txstore_db, outpoints, true);
+        log_fn_duration("ChainQuery::lookup_avail_txos", t.elapsed().as_micros());
+        res
     }
 
     pub fn lookup_spend(&self, outpoint: &OutPoint) -> Option<SpendingInput> {
@@ -1038,12 +1048,13 @@ fn lookup_txos(
     outpoints: &BTreeSet<OutPoint>,
     allow_missing: bool,
 ) -> HashMap<OutPoint, TxOut> {
+    let t = Instant::now();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(16) // we need to saturate SSD IOPS
         .thread_name(|i| format!("lookup-txo-{}", i))
         .build()
         .unwrap();
-    pool.install(|| {
+    let res = pool.install(|| {
         outpoints
             .par_iter()
             .filter_map(|outpoint| {
@@ -1057,7 +1068,9 @@ fn lookup_txos(
                     .map(|txo| (*outpoint, txo))
             })
             .collect()
-    })
+    });
+    log_fn_duration("lookup_txos", t.elapsed().as_micros());
+    res
 }
 
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {

@@ -25,7 +25,7 @@ use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::new_index::{Query, Utxo};
 use crate::util::electrum_merkle::{get_header_merkle_proof, get_id_from_pos, get_tx_merkle_proof};
-use crate::util::{create_socket, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry};
+use crate::util::{create_socket, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry, SyncChannel, log_fn_duration};
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
@@ -36,10 +36,13 @@ use crate::electrum::{DiscoveryManager, ServerFeatures};
 
 // TODO: Sha256dHash should be a generic hash-container (since script hash is single SHA256)
 fn hash_from_value(val: Option<&Value>) -> Result<Sha256dHash> {
+    let t = Instant::now();
     let script_hash = val.chain_err(|| "missing hash")?;
     let script_hash = script_hash.as_str().chain_err(|| "non-string hash")?;
     let script_hash = script_hash.parse().chain_err(|| "non-hex hash")?;
-    Ok(script_hash)
+    let res = Ok(script_hash);
+    log_fn_duration("hash_from_value", t.elapsed().as_micros());
+    res
 }
 
 fn usize_from_value(val: Option<&Value>, name: &str) -> Result<usize> {
@@ -302,10 +305,11 @@ impl Connection {
     }
 
     fn blockchain_scripthash_get_history(&self, params: &[Value]) -> Result<Value> {
+        let t = Instant::now();
         let script_hash = hash_from_value(params.get(0)).chain_err(|| "bad script_hash")?;
         let history_txids = get_history(&self.query, &script_hash[..], self.txs_limit)?;
 
-        Ok(json!(history_txids
+        let res = Ok(json!(history_txids
             .into_iter()
             .map(|(txid, blockid)| {
                 let is_mempool = blockid.is_none();
@@ -316,7 +320,9 @@ impl Connection {
                 let height = get_electrum_height(blockid, has_unconfirmed_parents);
                 GetHistoryResult { txid, height, fee }
             })
-            .collect::<Vec<_>>()))
+            .collect::<Vec<_>>()));
+        log_fn_duration("connection::blockchain_scripthash_get_history", t.elapsed().as_micros());
+        res
     }
 
     fn blockchain_scripthash_listunspent(&self, params: &[Value]) -> Result<Value> {
@@ -666,8 +672,11 @@ fn get_history(
     scripthash: &[u8],
     txs_limit: usize,
 ) -> Result<Vec<(Txid, Option<BlockId>)>> {
+    let t = Instant::now();
     // to avoid silently trunacting history entries, ask for one extra more than the limit and fail if it exists
     let history_txids = query.history_txids(scripthash, txs_limit + 1);
+    log_fn_duration("get_history", t.elapsed().as_micros());
+
     ensure!(history_txids.len() <= txs_limit, ErrorKind::TooPopular);
     Ok(history_txids)
 }

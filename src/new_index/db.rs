@@ -1,9 +1,10 @@
 use rocksdb;
 
 use std::path::Path;
+use std::time::Instant;
 
 use crate::config::Config;
-use crate::util::{bincode, Bytes};
+use crate::util::{bincode, Bytes, log_fn_duration};
 
 static DB_VERSION: u32 = 1;
 
@@ -131,10 +132,12 @@ impl DB {
     }
 
     pub fn iter_scan_from(&self, prefix: &[u8], start_at: &[u8]) -> ScanIterator {
+        let t = Instant::now();
         let iter = self.db.iterator(rocksdb::IteratorMode::From(
             start_at,
             rocksdb::Direction::Forward,
         ));
+        log_fn_duration("db::iter_scan_from", t.elapsed().as_micros());
         ScanIterator {
             prefix: prefix.to_vec(),
             iter,

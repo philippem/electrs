@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::errors::*;
 use crate::new_index::{ChainQuery, Mempool, ScriptStats, SpendingInput, Utxo};
-use crate::util::{is_spendable, BlockId, Bytes, TransactionStatus};
+use crate::util::{is_spendable, BlockId, Bytes, TransactionStatus, log_fn_duration};
 
 #[cfg(feature = "liquid")]
 use crate::{
@@ -66,7 +66,10 @@ impl Query {
     }
 
     pub fn mempool(&self) -> RwLockReadGuard<Mempool> {
-        self.mempool.read().unwrap()
+        let t = Instant::now();
+        let res = self.mempool.read().unwrap();
+        log_fn_duration("query::mempool", t.elapsed().as_micros());
+        res
     }
 
     pub fn broadcast_raw(&self, txhex: &str) -> Result<Txid> {
@@ -87,6 +90,7 @@ impl Query {
     }
 
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<(Txid, Option<BlockId>)> {
+        let t = Instant::now();
         let confirmed_txids = self.chain.history_txids(scripthash, limit);
         let confirmed_len = confirmed_txids.len();
         let confirmed_txids = confirmed_txids.into_iter().map(|(tx, b)| (tx, Some(b)));
@@ -97,7 +101,9 @@ impl Query {
             .into_iter()
             .map(|tx| (tx, None));
 
-        confirmed_txids.chain(mempool_txids).collect()
+        let res = confirmed_txids.chain(mempool_txids).collect();
+        log_fn_duration("query::history_txids", t.elapsed().as_micros());
+        res
     }
 
     pub fn stats(&self, scripthash: &[u8]) -> (ScriptStats, ScriptStats) {
