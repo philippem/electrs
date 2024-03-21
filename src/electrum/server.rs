@@ -556,14 +556,19 @@ impl Connection {
                                         json!(params)
                                     } else {
                                         Value::Null
-                                    }
+                                    },
+                                    "duration_req_parsing_micros": start_time.elapsed().as_micros(),
                                 })
                             );
 
+                            let resp_gen_time = Instant::now();
                             let reply = self.handle_command(method, params, id)?;
                             let reply_length = reply.to_string().as_bytes().len();
+                            let resp_gen_time = resp_gen_time.elapsed().as_micros();
 
+                            let resp_send_time = Instant::now();
                             let send_result = self.send_values(&[reply]);
+                            let resp_send_time = resp_send_time.elapsed().as_micros();
 
                             conditionally_log_rpc_event!(
                                 self,
@@ -571,6 +576,8 @@ impl Connection {
                                     "event": "rpc response",
                                     "method": method,
                                     "payload_size": reply_length,
+                                    "duration_resp_calc_micros": resp_gen_time,
+                                    "duration_resp_send_micros": resp_send_time,
                                     "duration_micros": start_time.elapsed().as_micros(),
                                     "id": id,
                                 })
