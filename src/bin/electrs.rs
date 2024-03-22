@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use electrs::{
-    config::Config,
+    config::{Config, get_num_threads},
     daemon::Daemon,
     electrum::RPC as ElectrumRPC,
     errors::*,
@@ -55,11 +55,15 @@ fn run_server(config: Arc<Config>) -> Result<()> {
         &metrics,
     )?);
     let store = Arc::new(Store::open(&config.db_path.join("newindex"), &config));
+
+    let num_threads = get_num_threads();
+
     let mut indexer = Indexer::open(
         Arc::clone(&store),
         fetch_from(&config, &store),
         &config,
         &metrics,
+        num_threads,
     );
     let mut tip = indexer.update(&daemon)?;
 
@@ -68,12 +72,13 @@ fn run_server(config: Arc<Config>) -> Result<()> {
         Arc::clone(&daemon),
         &config,
         &metrics,
+        num_threads,
     ));
 
     if let Some(ref precache_file) = config.precache_scripts {
         let precache_scripthashes = precache::scripthashes_from_file(precache_file.to_string())
             .expect("cannot load scripts to precache");
-        precache::precache(&chain, precache_scripthashes);
+        precache::precache(&chain, precache_scripthashes, num_threads);
     }
 
     let mempool = Arc::new(RwLock::new(Mempool::new(

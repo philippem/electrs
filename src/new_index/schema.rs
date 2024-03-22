@@ -166,6 +166,7 @@ pub struct Indexer {
     iconfig: IndexerConfig,
     duration: HistogramVec,
     tip_metric: Gauge,
+    num_threads: usize,
 }
 
 struct IndexerConfig {
@@ -196,11 +197,12 @@ pub struct ChainQuery {
     light_mode: bool,
     duration: HistogramVec,
     network: Network,
+    num_threads: usize,
 }
 
 // TODO: &[Block] should be an iterator / a queue.
 impl Indexer {
-    pub fn open(store: Arc<Store>, from: FetchFrom, config: &Config, metrics: &Metrics) -> Self {
+    pub fn open(store: Arc<Store>, from: FetchFrom, config: &Config, metrics: &Metrics, num_threads: usize) -> Self {
         Indexer {
             store,
             flush: DBFlush::Disable,
@@ -211,6 +213,7 @@ impl Indexer {
                 &["step"],
             ),
             tip_metric: metrics.gauge(MetricOpts::new("tip_height", "Current chain tip height")),
+            num_threads,
         }
     }
 
@@ -325,7 +328,7 @@ impl Indexer {
     fn index(&self, blocks: &[BlockEntry]) {
         let previous_txos_map = {
             let _timer = self.start_timer("index_lookup");
-            lookup_txos(&self.store.txstore_db, &get_previous_txos(blocks), false)
+            lookup_txos(&self.store.txstore_db, &get_previous_txos(blocks), false, self.num_threads)
         };
         let rows = {
             let _timer = self.start_timer("index_process");
@@ -348,7 +351,7 @@ impl Indexer {
 }
 
 impl ChainQuery {
-    pub fn new(store: Arc<Store>, daemon: Arc<Daemon>, config: &Config, metrics: &Metrics) -> Self {
+    pub fn new(store: Arc<Store>, daemon: Arc<Daemon>, config: &Config, metrics: &Metrics, num_threads: usize) -> Self {
         ChainQuery {
             store,
             daemon,
@@ -358,6 +361,7 @@ impl ChainQuery {
                 HistogramOpts::new("query_duration", "Index query duration (in seconds)"),
                 &["name"],
             ),
+            num_threads,
         }
     }
 
@@ -868,13 +872,13 @@ impl ChainQuery {
 
     pub fn lookup_txos(&self, outpoints: &BTreeSet<OutPoint>) -> HashMap<OutPoint, TxOut> {
         let _timer = self.start_timer("lookup_txos");
-        lookup_txos(&self.store.txstore_db, outpoints, false)
+        lookup_txos(&self.store.txstore_db, outpoints, false, self.num_threads)
     }
 
     pub fn lookup_avail_txos(&self, outpoints: &BTreeSet<OutPoint>) -> HashMap<OutPoint, TxOut> {
         let t = Instant::now();
         let _timer = self.start_timer("lookup_available_txos");
-        let res = lookup_txos(&self.store.txstore_db, outpoints, true);
+        let res = lookup_txos(&self.store.txstore_db, outpoints, true, self.num_threads);
         log_fn_duration("ChainQuery::lookup_avail_txos", t.elapsed().as_micros());
         res
     }
@@ -1047,10 +1051,11 @@ fn lookup_txos(
     txstore_db: &DB,
     outpoints: &BTreeSet<OutPoint>,
     allow_missing: bool,
+    num_threads: usize,
 ) -> HashMap<OutPoint, TxOut> {
     let t = Instant::now();
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(16) // we need to saturate SSD IOPS
+        .num_threads(num_threads) // we need to saturate SSD IOPS
         .thread_name(|i| format!("lookup-txo-{}", i))
         .build()
         .unwrap();

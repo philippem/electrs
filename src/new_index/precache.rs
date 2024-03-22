@@ -13,12 +13,12 @@ use std::io;
 use std::io::prelude::*;
 use std::str::FromStr;
 
-pub fn precache(chain: &ChainQuery, scripthashes: Vec<FullHash>) {
+pub fn precache(chain: &ChainQuery, scripthashes: Vec<FullHash>, num_threads: usize) {
     let total = scripthashes.len();
     info!("Pre-caching stats and utxo set for {} scripthashes", total);
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(16)
+        .num_threads(num_threads)
         .thread_name(|i| format!("precache-{}", i))
         .build()
         .unwrap();

@@ -1,6 +1,6 @@
 use clap::{App, Arg};
 use dirs::home_dir;
-use std::fs;
+use std::{fs, thread};
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,22 @@ use crate::errors::*;
 use bitcoin::Network as BNetwork;
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub fn get_num_threads() -> usize {
+    let mut num_threads: usize = 16; // default value as in original electrs impl
+
+    match thread::available_parallelism() {
+        Ok(value) => {
+            num_threads = value.get();
+            info!("Using num_threads: {}, calculated with thread::available_parallelism call.", num_threads);
+        }
+        Err(_) => {
+            warn!("The amount of parallelism is not known for the target platform. Using default num_threads: {}.", num_threads);
+        }
+    }
+
+    num_threads
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {

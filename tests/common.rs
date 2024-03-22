@@ -17,7 +17,7 @@ use noded::bitcoincore_rpc::{self, RpcApi};
 
 use electrs::{
     chain::{Address, BlockHash, Network, Txid},
-    config::Config,
+    config::{Config, get_num_threads},
     daemon::Daemon,
     electrum::RPC as ElectrumRPC,
     metrics::Metrics,
@@ -146,7 +146,7 @@ impl TestRunner {
             FetchFrom::Bitcoind
         };
 
-        let mut indexer = Indexer::open(Arc::clone(&store), fetch_from, &config, &metrics);
+        let mut indexer = Indexer::open(Arc::clone(&store), fetch_from, &config, &metrics, get_num_threads());
         indexer.update(&daemon)?;
         indexer.fetch_from(FetchFrom::Bitcoind);
 
