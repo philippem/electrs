@@ -13,13 +13,14 @@ fn main() {
     use bitcoin::consensus::encode::deserialize;
     use electrs::{
         chain::Transaction,
-        config::Config,
+        config::{Config, get_num_threads},
         daemon::Daemon,
         metrics::Metrics,
         new_index::{ChainQuery, FetchFrom, Indexer, Store},
         signal::Waiter,
         util::has_prevout,
     };
+    use log::info;
 
     let signal = Waiter::start();
     let config = Config::from_args();
@@ -28,6 +29,7 @@ fn main() {
     let metrics = Metrics::new(config.monitoring_addr);
     metrics.start();
 
+    let num_threads = get_num_threads();
     let daemon = Arc::new(
         Daemon::new(
             &config.daemon_dir,
@@ -41,9 +43,9 @@ fn main() {
         .unwrap(),
     );
 
-    let chain = ChainQuery::new(Arc::clone(&store), Arc::clone(&daemon), &config, &metrics);
+    let chain = ChainQuery::new(Arc::clone(&store), Arc::clone(&daemon), &config, &metrics, num_threads);
 
-    let mut indexer = Indexer::open(Arc::clone(&store), FetchFrom::Bitcoind, &config, &metrics);
+    let mut indexer = Indexer::open(Arc::clone(&store), FetchFrom::Bitcoind, &config, &metrics, num_threads);
     indexer.update(&daemon).unwrap();
 
     let mut iter = store.txstore_db().raw_iterator();
