@@ -26,7 +26,7 @@ pub fn get_electrum_height(blockid: Option<BlockId>, has_unconfirmed_parents: bo
         (None, false) => 0,
         (None, true) => -1,
     };
-    log_fn_duration("get_electrum_height", t.elapsed().as_micros());
+    log_fn_duration("electrum::mod::get_electrum_height", t.elapsed().as_micros());
     res
 }
 

@@ -879,7 +879,7 @@ impl ChainQuery {
         let t = Instant::now();
         let _timer = self.start_timer("lookup_available_txos");
         let res = lookup_txos(&self.store.txstore_db, outpoints, true, self.num_threads);
-        log_fn_duration("ChainQuery::lookup_avail_txos", t.elapsed().as_micros());
+        log_fn_duration("chainquery::lookup_avail_txos", t.elapsed().as_micros());
         res
     }
 
@@ -1059,6 +1059,8 @@ fn lookup_txos(
         .thread_name(|i| format!("lookup-txo-{}", i))
         .build()
         .unwrap();
+    log_fn_duration("schema::ThreadPoolBuilder", t.elapsed().as_micros());
+    let t2 = Instant::now();
     let res = pool.install(|| {
         outpoints
             .par_iter()
@@ -1074,14 +1076,18 @@ fn lookup_txos(
             })
             .collect()
     });
-    log_fn_duration("lookup_txos", t.elapsed().as_micros());
+    log_fn_duration("schema::pool::install", t2.elapsed().as_micros());
+    log_fn_duration("schema::lookup_txos", t.elapsed().as_micros());
     res
 }
 
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
-    txstore_db
+    let t = Instant::now();
+    let res = txstore_db
         .get(&TxOutRow::key(&outpoint))
-        .map(|val| deserialize(&val).expect("failed to parse TxOut"))
+        .map(|val| deserialize(&val).expect("failed to parse TxOut"));
+    log_fn_duration("schema::lookup_txo", t.elapsed().as_micros());
+    res
 }
 
 fn index_blocks(

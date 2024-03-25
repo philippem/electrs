@@ -41,7 +41,7 @@ fn hash_from_value(val: Option<&Value>) -> Result<Sha256dHash> {
     let script_hash = script_hash.as_str().chain_err(|| "non-string hash")?;
     let script_hash = script_hash.parse().chain_err(|| "non-hex hash")?;
     let res = Ok(script_hash);
-    log_fn_duration("hash_from_value", t.elapsed().as_micros());
+    log_fn_duration("server::hash_from_value", t.elapsed().as_micros());
     res
 }
 
@@ -321,7 +321,7 @@ impl Connection {
                 GetHistoryResult { txid, height, fee }
             })
             .collect::<Vec<_>>()));
-        log_fn_duration("connection::blockchain_scripthash_get_history", t.elapsed().as_micros());
+        log_fn_duration("server::blockchain_scripthash_get_history", t.elapsed().as_micros());
         res
     }
 
@@ -675,7 +675,7 @@ fn get_history(
     let t = Instant::now();
     // to avoid silently trunacting history entries, ask for one extra more than the limit and fail if it exists
     let history_txids = query.history_txids(scripthash, txs_limit + 1);
-    log_fn_duration("get_history", t.elapsed().as_micros());
+    log_fn_duration("server::get_history", t.elapsed().as_micros());
 
     ensure!(history_txids.len() <= txs_limit, ErrorKind::TooPopular);
     Ok(history_txids)
