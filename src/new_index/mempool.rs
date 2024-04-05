@@ -505,6 +505,7 @@ impl Mempool {
     }
 
     pub fn update(mempool: &Arc<RwLock<Mempool>>, daemon: &Daemon) -> Result<()> {
+        let t = Instant::now();
         let _timer = mempool.read().unwrap().latency.with_label_values(&["update"]).start_timer();
 
         // 1. Determine which transactions are no longer in the daemon's mempool and which ones have newly entered it
@@ -540,7 +541,7 @@ impl Mempool {
                 mempool.update_backlog_stats();
             }
         }
-
+        log_fn_duration("mempool::update", t.elapsed().as_micros());
         Ok(())
     }
 }
