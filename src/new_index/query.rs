@@ -90,7 +90,7 @@ impl Query {
     }
 
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<(Txid, Option<BlockId>)> {
-        let t = Instant::now();
+        //let t = Instant::now();
         let confirmed_txids = self.chain.history_txids(scripthash, limit);
         let confirmed_len = confirmed_txids.len();
         let confirmed_txids = confirmed_txids.into_iter().map(|(tx, b)| (tx, Some(b)));
@@ -102,7 +102,7 @@ impl Query {
             .map(|tx| (tx, None));
 
         let res = confirmed_txids.chain(mempool_txids).collect();
-        log_fn_duration("query::history_txids", t.elapsed().as_micros());
+        //log_fn_duration("query::history_txids", t.elapsed().as_micros());
         res
     }
 

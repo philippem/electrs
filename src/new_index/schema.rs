@@ -20,7 +20,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+//use std::time::Instant;
 
 use crate::chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
@@ -29,7 +29,7 @@ use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramTimer, HistogramVec, MetricOpts, Metrics};
-use crate::util::{bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta, BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr, log_fn_duration};
+use crate::util::{bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta, BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr};//, log_fn_duration};
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
 use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
@@ -455,12 +455,12 @@ impl ChainQuery {
     }
 
     pub fn history_iter_scan(&self, code: u8, hash: &[u8], start_height: usize) -> ScanIterator {
-        let t = Instant::now();
+   //     let t = Instant::now();
         let res = self.store.history_db.iter_scan_from(
             &TxHistoryRow::filter(code, &hash[..]),
             &TxHistoryRow::prefix_height(code, &hash[..], start_height as u32),
         );
-        log_fn_duration("chainquery::history_iter_scan", t.elapsed().as_micros());
+   //     log_fn_duration("chainquery::history_iter_scan", t.elapsed().as_micros());
         res
     }
     fn history_iter_scan_reverse(&self, code: u8, hash: &[u8]) -> ReverseScanIterator {
@@ -515,29 +515,29 @@ impl ChainQuery {
     }
 
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
-        let t = Instant::now();
+    //    let t = Instant::now();
         // scripthash lookup
         let res = self._history_txids(b'H', scripthash, limit);
-        log_fn_duration("chainquery::history_txids", t.elapsed().as_micros());
+  //      log_fn_duration("chainquery::history_txids", t.elapsed().as_micros());
         res
     }
 
     fn _history_txids(&self, code: u8, hash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
-        let t = Instant::now();
-        let _timer = self.start_timer("history_txids");
+      //  let t = Instant::now();
+      //  let _timer = self.start_timer("history_txids");
         let res = self.history_iter_scan(code, hash, 0)
             .map(|row| TxHistoryRow::from_row(row).get_txid())
             .unique()
             .filter_map(|txid| self.tx_confirming_block(&txid).map(|b| (txid, b)))
             .take(limit)
             .collect();
-        log_fn_duration("chainquery::_history_txids", t.elapsed().as_micros());
+      //  log_fn_duration("chainquery::_history_txids", t.elapsed().as_micros());
         res
     }
 
     // TODO: avoid duplication with stats/stats_delta?
     pub fn utxo(&self, scripthash: &[u8], limit: usize) -> Result<Vec<Utxo>> {
-        let _timer = self.start_timer("utxo");
+  //      let _timer = self.start_timer("utxo");
 
         // get the last known utxo set and the blockhash it was updated for.
         // invalidates the cache if the block was orphaned.
@@ -1053,14 +1053,14 @@ fn lookup_txos(
     allow_missing: bool,
     num_threads: usize,
 ) -> HashMap<OutPoint, TxOut> {
-    let t = Instant::now();
+    //let t = Instant::now();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads) // we need to saturate SSD IOPS
         .thread_name(|i| format!("lookup-txo-{}", i))
         .build()
         .unwrap();
     //log_fn_duration("schema::ThreadPoolBuilder", t.elapsed().as_micros());
-    let t2 = Instant::now();
+    //let t2 = Instant::now();
     let res = pool.install(|| {
         outpoints
             .par_iter()
@@ -1082,7 +1082,7 @@ fn lookup_txos(
 }
 
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
-    let t = Instant::now();
+    //let t = Instant::now();
     let res = txstore_db
         .get(&TxOutRow::key(&outpoint))
         .map(|val| deserialize(&val).expect("failed to parse TxOut"));

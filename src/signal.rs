@@ -52,7 +52,10 @@ impl Waiter {
                 }
             }
             Ok(sig) => bail!(ErrorKind::Interrupt(sig)),
-            Err(RecvTimeoutError::Timeout) => Ok(()),
+            Err(RecvTimeoutError::Timeout) => {
+                trace!("timeout");
+                Ok(())
+            }
             Err(RecvTimeoutError::Disconnected) => bail!("signal hook channel disconnected"),
         }
     }

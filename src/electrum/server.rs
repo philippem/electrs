@@ -25,7 +25,7 @@ use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramVec, MetricOpts, Metrics};
 use crate::new_index::{Query, Utxo};
 use crate::util::electrum_merkle::{get_header_merkle_proof, get_id_from_pos, get_tx_merkle_proof};
-use crate::util::{create_socket, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry, SyncChannel, log_fn_duration};
+use crate::util::{create_socket, spawn_thread, BlockId, BoolThen, Channel, FullHash, HeaderEntry, SyncChannel};//, log_fn_duration};
 
 const ELECTRS_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 4);
@@ -36,12 +36,12 @@ use crate::electrum::{DiscoveryManager, ServerFeatures};
 
 // TODO: Sha256dHash should be a generic hash-container (since script hash is single SHA256)
 fn hash_from_value(val: Option<&Value>) -> Result<Sha256dHash> {
-    let t = Instant::now();
+  //  let t = Instant::now();
     let script_hash = val.chain_err(|| "missing hash")?;
     let script_hash = script_hash.as_str().chain_err(|| "non-string hash")?;
     let script_hash = script_hash.parse().chain_err(|| "non-hex hash")?;
     let res = Ok(script_hash);
-    log_fn_duration("server::hash_from_value", t.elapsed().as_micros());
+ //   log_fn_duration("server::hash_from_value", t.elapsed().as_micros());
     res
 }
 
@@ -305,7 +305,7 @@ impl Connection {
     }
 
     fn blockchain_scripthash_get_history(&self, params: &[Value]) -> Result<Value> {
-        let t = Instant::now();
+      //  let t = Instant::now();
         let script_hash = hash_from_value(params.get(0)).chain_err(|| "bad script_hash")?;
         let history_txids = get_history(&self.query, &script_hash[..], self.txs_limit)?;
 
@@ -321,7 +321,7 @@ impl Connection {
                 GetHistoryResult { txid, height, fee }
             })
             .collect::<Vec<_>>()));
-        log_fn_duration("server::blockchain_scripthash_get_history", t.elapsed().as_micros());
+     //   log_fn_duration("server::blockchain_scripthash_get_history", t.elapsed().as_micros());
         res
     }
 
@@ -672,10 +672,10 @@ fn get_history(
     scripthash: &[u8],
     txs_limit: usize,
 ) -> Result<Vec<(Txid, Option<BlockId>)>> {
-    let t = Instant::now();
+ //   let t = Instant::now();
     // to avoid silently trunacting history entries, ask for one extra more than the limit and fail if it exists
     let history_txids = query.history_txids(scripthash, txs_limit + 1);
-    log_fn_duration("server::get_history", t.elapsed().as_micros());
+ //   log_fn_duration("server::get_history", t.elapsed().as_micros());
 
     ensure!(history_txids.len() <= txs_limit, ErrorKind::TooPopular);
     Ok(history_txids)

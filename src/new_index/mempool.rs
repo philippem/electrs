@@ -21,7 +21,7 @@ use crate::new_index::{
     SpendingInfo, SpendingInput, TxHistoryInfo, Utxo,
 };
 use crate::util::fees::{make_fee_histogram, TxFeeInfo};
-use crate::util::{extract_tx_prevouts, full_hash, has_prevout, is_spendable, Bytes, log_fn_duration};
+use crate::util::{extract_tx_prevouts, full_hash, has_prevout, is_spendable, Bytes};//, log_fn_duration};
 
 #[cfg(feature = "liquid")]
 use crate::elements::asset;
@@ -120,14 +120,14 @@ impl Mempool {
     }
 
     pub fn get_tx_fee(&self, txid: &Txid) -> Option<u64> {
-        let t = Instant::now();
+      //  let t = Instant::now();
         let res = Some(self.feeinfo.get(txid)?.fee);
-        log_fn_duration("mempool::get_tx_fee", t.elapsed().as_micros());
+     //   log_fn_duration("mempool::get_tx_fee", t.elapsed().as_micros());
         res
     }
 
     pub fn has_unconfirmed_parents(&self, txid: &Txid) -> bool {
-        let t = Instant::now();
+    //    let t = Instant::now();
         let tx = match self.txstore.get(txid) {
             Some(tx) => tx,
             None => return false,
@@ -135,7 +135,7 @@ impl Mempool {
         let res = tx.input
             .iter()
             .any(|txin| self.txstore.contains_key(&txin.previous_output.txid));
-        log_fn_duration("mempool::has_unconfirmed_parents", t.elapsed().as_micros());
+    //    log_fn_duration("mempool::has_unconfirmed_parents", t.elapsed().as_micros());
         res
     }
 
@@ -158,7 +158,7 @@ impl Mempool {
     }
 
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<Txid> {
-        let t  = Instant::now();
+  //      let t  = Instant::now();
         let _timer = self
             .latency
             .with_label_values(&["history_txids"])
@@ -172,7 +172,7 @@ impl Mempool {
                 .take(limit)
                 .collect()
         };
-        log_fn_duration("mempool::history_txids", t.elapsed().as_micros());
+    //    log_fn_duration("mempool::history_txids", t.elapsed().as_micros());
         res
     }
 
@@ -306,7 +306,7 @@ impl Mempool {
     }
 
     fn add(&mut self, txs: Vec<Transaction>) {
-        let t = Instant::now();
+        //let t = Instant::now();
         self.delta
             .with_label_values(&["add"])
             .observe(txs.len() as f64);
@@ -415,7 +415,7 @@ impl Mempool {
     }
 
     pub fn lookup_txos(&self, outpoints: &BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
-        let t = Instant::now();
+        //let t = Instant::now();
         let _timer = self
             .latency
             .with_label_values(&["lookup_txos"])
@@ -505,7 +505,7 @@ impl Mempool {
     }
 
     pub fn update(mempool: &Arc<RwLock<Mempool>>, daemon: &Daemon) -> Result<()> {
-        let t = Instant::now();
+        //let t = Instant::now();
         let _timer = mempool.read().unwrap().latency.with_label_values(&["update"]).start_timer();
 
         // 1. Determine which transactions are no longer in the daemon's mempool and which ones have newly entered it

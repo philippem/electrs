@@ -13,20 +13,20 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
-use std::time::Instant;
+//use std::time::Instant;
 
 use crate::chain::BlockHash;
 use crate::errors::ResultExt;
-use crate::util::{BlockId, log_fn_duration};
+use crate::util::{BlockId};//, log_fn_duration};
 
 pub fn get_electrum_height(blockid: Option<BlockId>, has_unconfirmed_parents: bool) -> isize {
-    let t = Instant::now();
+  //  let t = Instant::now();
     let res = match (blockid, has_unconfirmed_parents) {
         (Some(blockid), _) => blockid.height as isize,
         (None, false) => 0,
         (None, true) => -1,
     };
-    log_fn_duration("electrum::mod::get_electrum_height", t.elapsed().as_micros());
+//    log_fn_duration("electrum::mod::get_electrum_height", t.elapsed().as_micros());
     res
 }
 
