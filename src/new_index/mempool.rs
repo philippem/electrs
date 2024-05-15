@@ -405,7 +405,7 @@ impl Mempool {
                 &mut self.asset_issuance,
             );
         }
-        log_fn_duration("mempool::add", t.elapsed().as_micros());
+      //  log_fn_duration("mempool::add", t.elapsed().as_micros());
     }
 
     pub fn lookup_txo(&self, outpoint: &OutPoint) -> Result<TxOut> {
@@ -437,7 +437,7 @@ impl Mempool {
 
         let mut txos = confirmed_txos;
         txos.extend(mempool_txos);
-        log_fn_duration("mempool::lookup_txos", t.elapsed().as_micros());
+     //   log_fn_duration("mempool::lookup_txos", t.elapsed().as_micros());
         Ok(txos)
     }
 
@@ -541,7 +541,7 @@ impl Mempool {
                 mempool.update_backlog_stats();
             }
         }
-        log_fn_duration("mempool::update", t.elapsed().as_micros());
+      //  log_fn_duration("mempool::update", t.elapsed().as_micros());
         Ok(())
     }
 }

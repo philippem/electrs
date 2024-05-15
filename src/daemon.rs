@@ -161,6 +161,7 @@ impl Connection {
     }
 
     fn reconnect(&self) -> Result<Connection> {
+        debug!("reconnect to {}", self.addr);
         Connection::new(self.addr, self.cookie_getter.clone(), self.signal.clone())
     }
 

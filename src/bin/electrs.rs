@@ -132,12 +132,20 @@ fn run_server(config: Arc<Config>) -> Result<()> {
             break;
         }
 
+        debug!("checking for new blocks, current_tip={}", tip);
+
         // Index new blocks
         let current_tip = daemon.getbestblockhash()?;
+
+        debug!("new blockhash from bitcoind={}", current_tip);
+
         if current_tip != tip {
+            debug!("updating index to {}", current_tip);
             indexer.update(&daemon)?;
             tip = current_tip;
-        };
+        } else {
+            debug!("tip unchanged, no update");
+        }
 
         // Update mempool
         if let Err(e) = Mempool::update(&mempool, &daemon) {

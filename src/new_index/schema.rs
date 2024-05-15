@@ -378,7 +378,7 @@ impl ChainQuery {
     }
 
     pub fn get_block_txids(&self, hash: &BlockHash) -> Option<Vec<Txid>> {
-        let _timer = self.start_timer("get_block_txids");
+       // let _timer = self.start_timer("get_block_txids");
 
         if self.light_mode {
             // TODO fetch block as binary from REST API instead of as hex
@@ -393,7 +393,7 @@ impl ChainQuery {
     }
 
     pub fn get_block_meta(&self, hash: &BlockHash) -> Option<BlockMeta> {
-        let _timer = self.start_timer("get_block_meta");
+      //  let _timer = self.start_timer("get_block_meta");
 
         if self.light_mode {
             let blockinfo = self.daemon.getblock_raw(hash, 1).ok()?;
@@ -866,20 +866,20 @@ impl ChainQuery {
     }
 
     pub fn lookup_txo(&self, outpoint: &OutPoint) -> Option<TxOut> {
-        let _timer = self.start_timer("lookup_txo");
+        //let _timer = self.start_timer("lookup_txo");
         lookup_txo(&self.store.txstore_db, outpoint)
     }
 
     pub fn lookup_txos(&self, outpoints: &BTreeSet<OutPoint>) -> HashMap<OutPoint, TxOut> {
-        let _timer = self.start_timer("lookup_txos");
+        //let _timer = self.start_timer("lookup_txos");
         lookup_txos(&self.store.txstore_db, outpoints, false, self.num_threads)
     }
 
     pub fn lookup_avail_txos(&self, outpoints: &BTreeSet<OutPoint>) -> HashMap<OutPoint, TxOut> {
-        let t = Instant::now();
-        let _timer = self.start_timer("lookup_available_txos");
+        //let t = Instant::now();
+       // let _timer = self.start_timer("lookup_available_txos");
         let res = lookup_txos(&self.store.txstore_db, outpoints, true, self.num_threads);
-        log_fn_duration("chainquery::lookup_avail_txos", t.elapsed().as_micros());
+        //log_fn_duration("chainquery::lookup_avail_txos", t.elapsed().as_micros());
         res
     }
 
@@ -1059,7 +1059,7 @@ fn lookup_txos(
         .thread_name(|i| format!("lookup-txo-{}", i))
         .build()
         .unwrap();
-    log_fn_duration("schema::ThreadPoolBuilder", t.elapsed().as_micros());
+    //log_fn_duration("schema::ThreadPoolBuilder", t.elapsed().as_micros());
     let t2 = Instant::now();
     let res = pool.install(|| {
         outpoints
@@ -1076,8 +1076,8 @@ fn lookup_txos(
             })
             .collect()
     });
-    log_fn_duration("schema::pool::install", t2.elapsed().as_micros());
-    log_fn_duration("schema::lookup_txos", t.elapsed().as_micros());
+    //log_fn_duration("schema::pool::install", t2.elapsed().as_micros());
+    //log_fn_duration("schema::lookup_txos", t.elapsed().as_micros());
     res
 }
 
@@ -1086,7 +1086,7 @@ fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
     let res = txstore_db
         .get(&TxOutRow::key(&outpoint))
         .map(|val| deserialize(&val).expect("failed to parse TxOut"));
-    log_fn_duration("schema::lookup_txo", t.elapsed().as_micros());
+   // log_fn_duration("schema::lookup_txo", t.elapsed().as_micros());
     res
 }
 
