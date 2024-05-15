@@ -68,6 +68,7 @@ tempfile = "3.10"
 lto = true
 panic = 'abort'
 codegen-units = 1
+debug = true
 
 [patch.crates-io.electrum-client]
 git = "https://github.com/Blockstream/rust-electrum-client"
