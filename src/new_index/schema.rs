@@ -20,7 +20,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-//use std::time::Instant;
+use std::time::Instant;
 
 use crate::chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
@@ -29,7 +29,7 @@ use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::errors::*;
 use crate::metrics::{Gauge, HistogramOpts, HistogramTimer, HistogramVec, MetricOpts, Metrics};
-use crate::util::{bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta, BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr};//, log_fn_duration};
+use crate::util::{bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta, BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr, log_fn_duration};
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
 use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
@@ -261,6 +261,8 @@ impl Indexer {
     }
 
     pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
+        let t = Instant::now();
+
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;
         let new_headers = self.get_new_headers(&daemon, &tip)?;
@@ -303,6 +305,8 @@ impl Indexer {
         }
 
         self.tip_metric.set(headers.len() as i64 - 1);
+
+        log_fn_duration("indexer::update", t.elapsed().as_micros());
 
         Ok(tip)
     }
@@ -455,7 +459,7 @@ impl ChainQuery {
     }
 
     pub fn history_iter_scan(&self, code: u8, hash: &[u8], start_height: usize) -> ScanIterator {
-   //     let t = Instant::now();
+        //     let t = Instant::now();
         let res = self.store.history_db.iter_scan_from(
             &TxHistoryRow::filter(code, &hash[..]),
             &TxHistoryRow::prefix_height(code, &hash[..], start_height as u32),
@@ -523,21 +527,21 @@ impl ChainQuery {
     }
 
     fn _history_txids(&self, code: u8, hash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
-      //  let t = Instant::now();
-      //  let _timer = self.start_timer("history_txids");
+        let t = Instant::now();
+        let _timer = self.start_timer("history_txids");
         let res = self.history_iter_scan(code, hash, 0)
             .map(|row| TxHistoryRow::from_row(row).get_txid())
             .unique()
             .filter_map(|txid| self.tx_confirming_block(&txid).map(|b| (txid, b)))
             .take(limit)
             .collect();
-      //  log_fn_duration("chainquery::_history_txids", t.elapsed().as_micros());
+        log_fn_duration("chainquery::_history_txids", t.elapsed().as_micros());
         res
     }
 
     // TODO: avoid duplication with stats/stats_delta?
     pub fn utxo(&self, scripthash: &[u8], limit: usize) -> Result<Vec<Utxo>> {
-  //      let _timer = self.start_timer("utxo");
+        let _timer = self.start_timer("utxo");
 
         // get the last known utxo set and the blockhash it was updated for.
         // invalidates the cache if the block was orphaned.

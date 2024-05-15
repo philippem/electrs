@@ -21,7 +21,7 @@ use crate::new_index::{
     SpendingInfo, SpendingInput, TxHistoryInfo, Utxo,
 };
 use crate::util::fees::{make_fee_histogram, TxFeeInfo};
-use crate::util::{extract_tx_prevouts, full_hash, has_prevout, is_spendable, Bytes};//, log_fn_duration};
+use crate::util::{extract_tx_prevouts, full_hash, has_prevout, is_spendable, Bytes, log_fn_duration};
 
 #[cfg(feature = "liquid")]
 use crate::elements::asset;
@@ -306,7 +306,7 @@ impl Mempool {
     }
 
     fn add(&mut self, txs: Vec<Transaction>) {
-        //let t = Instant::now();
+        let t = Instant::now();
         self.delta
             .with_label_values(&["add"])
             .observe(txs.len() as f64);
@@ -405,7 +405,7 @@ impl Mempool {
                 &mut self.asset_issuance,
             );
         }
-      //  log_fn_duration("mempool::add", t.elapsed().as_micros());
+        log_fn_duration("mempool::add", t.elapsed().as_micros());
     }
 
     pub fn lookup_txo(&self, outpoint: &OutPoint) -> Result<TxOut> {
@@ -505,7 +505,7 @@ impl Mempool {
     }
 
     pub fn update(mempool: &Arc<RwLock<Mempool>>, daemon: &Daemon) -> Result<()> {
-        //let t = Instant::now();
+        let t = Instant::now();
         let _timer = mempool.read().unwrap().latency.with_label_values(&["update"]).start_timer();
 
         // 1. Determine which transactions are no longer in the daemon's mempool and which ones have newly entered it
@@ -541,7 +541,7 @@ impl Mempool {
                 mempool.update_backlog_stats();
             }
         }
-      //  log_fn_duration("mempool::update", t.elapsed().as_micros());
+        log_fn_duration("mempool::update", t.elapsed().as_micros());
         Ok(())
     }
 }
