@@ -133,19 +133,19 @@ fn run_server(config: Arc<Config>) -> Result<()> {
             break;
         }
 
-        trace!("calling getbestblockhash my tip={}", tip);
+        debug!("calling getbestblockhash my tip={}", tip);
         // Index new blocks
         let current_tip = daemon.getbestblockhash()?;
 
         if current_tip != tip {
-            trace!("retrieved NEW blockhash bitcoind new={}, beginning indexer.update", current_tip);
+            debug!("retrieved NEW blockhash bitcoind new={}, beginning indexer.update", current_tip);
             indexer.update(&daemon)?;
             tip = current_tip;
         } else {
-            trace!("tip UNCHANGED")
+            debug!("tip UNCHANGED")
         }
 
-        trace!("beginning Mempool::update");
+        debug!("beginning Mempool::update");
 
         // Update mempool
         if let Err(e) = Mempool::update(&mempool, &daemon) {
@@ -153,7 +153,7 @@ fn run_server(config: Arc<Config>) -> Result<()> {
             warn!("Error updating mempool, skipping mempool update: {}", e.display_chain());
         }
 
-        trace!("completed Mempool::update, notifying subscribed clients");
+        debug!("completed Mempool::update, notifying subscribed clients");
 
         // Update subscribed clients
         electrum_server.notify();
