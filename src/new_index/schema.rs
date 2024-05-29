@@ -20,6 +20,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use tracing::instrument;
 
 use crate::chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
@@ -220,6 +221,7 @@ impl Indexer {
         self.duration.with_label_values(&[name]).start_timer()
     }
 
+    #[instrument(skip(self, new_headers))]
     fn headers_to_add(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
         let added_blockhashes = self.store.added_blockhashes.read().unwrap();
         new_headers
@@ -238,6 +240,7 @@ impl Indexer {
             .collect()
     }
 
+    #[instrument(skip(self, db))]
     fn start_auto_compactions(&self, db: &DB) {
         let key = b"F".to_vec();
         if db.get(&key).is_none() {
@@ -248,6 +251,7 @@ impl Indexer {
         db.enable_auto_compaction();
     }
 
+    #[instrument(skip(self, daemon, tip))]
     fn get_new_headers(&self, daemon: &Daemon, tip: &BlockHash) -> Result<Vec<HeaderEntry>> {
         let headers = self.store.indexed_headers.read().unwrap();
         let new_headers = daemon.get_new_headers(&headers, &tip)?;
@@ -259,6 +263,7 @@ impl Indexer {
         Ok(result)
     }
 
+    #[instrument(skip(self, daemon))]
     pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;
@@ -864,6 +869,7 @@ impl ChainQuery {
         lookup_txos(&self.store.txstore_db, outpoints, false)
     }
 
+    #[instrument(skip(self, outpoints))]
     pub fn lookup_avail_txos(&self, outpoints: &BTreeSet<OutPoint>) -> HashMap<OutPoint, TxOut> {
         let _timer = self.start_timer("lookup_available_txos");
         lookup_txos(&self.store.txstore_db, outpoints, true)
@@ -1033,6 +1039,7 @@ fn get_previous_txos(block_entries: &[BlockEntry]) -> BTreeSet<OutPoint> {
         .collect()
 }
 
+#[instrument(skip(txstore_db, outpoints, allow_missing))]
 fn lookup_txos(
     txstore_db: &DB,
     outpoints: &BTreeSet<OutPoint>,
@@ -1060,6 +1067,7 @@ fn lookup_txos(
     })
 }
 
+#[instrument(skip(txstore_db, outpoint))]
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
     txstore_db
         .get(&TxOutRow::key(&outpoint))

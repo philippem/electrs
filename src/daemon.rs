@@ -16,6 +16,7 @@ use serde_json::{from_str, from_value, Value};
 use bitcoin::consensus::encode::{deserialize, serialize_hex};
 #[cfg(feature = "liquid")]
 use elements::encode::{deserialize, serialize_hex};
+use tracing::instrument;
 
 use crate::chain::{Block, BlockHash, BlockHeader, Network, Transaction, Txid};
 use crate::metrics::{HistogramOpts, HistogramVec, Metrics};
@@ -36,6 +37,7 @@ lazy_static! {
     );
 }
 
+#[instrument(skip_all, name="Daemon::parse_hash<T>")]
 fn parse_hash<T>(value: &Value) -> Result<T>
 where
     T: FromStr,
@@ -49,6 +51,7 @@ where
     .chain_err(|| format!("non-hex value: {}", value))?)
 }
 
+#[instrument(skip(value))]
 fn header_from_value(value: Value) -> Result<BlockHeader> {
     let header_hex = value
         .as_str()
@@ -181,6 +184,7 @@ impl Connection {
         })
     }
 
+    #[instrument(skip(self))]
     fn reconnect(&self) -> Result<Connection> {
         Connection::new(self.addr, self.cookie_getter.clone(), self.signal.clone())
     }
@@ -353,6 +357,7 @@ impl Daemon {
         Ok(daemon)
     }
 
+    #[instrument(skip(self))]
     pub fn reconnect(&self) -> Result<Daemon> {
         Ok(Daemon {
             daemon_dir: self.daemon_dir.clone(),
@@ -381,6 +386,7 @@ impl Daemon {
         self.network.magic()
     }
 
+    #[instrument(skip(self, method, request))]
     fn call_jsonrpc(&self, method: &str, request: &Value) -> Result<Value> {
         let mut conn = self.conn.lock().unwrap();
         let timer = self.latency.with_label_values(&[method]).start_timer();
@@ -398,6 +404,7 @@ impl Daemon {
         Ok(result)
     }
 
+    #[instrument(skip(self, method, params_list))]
     fn handle_request_batch(&self, method: &str, params_list: &[Value]) -> Result<Vec<Value>> {
         let id = self.message_id.next();
         let chunks = params_list
@@ -420,6 +427,7 @@ impl Daemon {
         Ok(results)
     }
 
+    #[instrument(skip(self, method, params_list))]
     fn retry_request_batch(&self, method: &str, params_list: &[Value]) -> Result<Vec<Value>> {
         loop {
             match self.handle_request_batch(method, params_list) {
@@ -435,12 +443,14 @@ impl Daemon {
         }
     }
 
+    #[instrument(skip(self, method, params))]
     fn request(&self, method: &str, params: Value) -> Result<Value> {
         let mut values = self.retry_request_batch(method, &[params])?;
         assert_eq!(values.len(), 1);
         Ok(values.remove(0))
     }
 
+    #[instrument(skip(self, method, params_list))]
     fn requests(&self, method: &str, params_list: &[Value]) -> Result<Vec<Value>> {
         self.retry_request_batch(method, params_list)
     }
@@ -457,10 +467,12 @@ impl Daemon {
         Ok(from_value(info).chain_err(|| "invalid network info")?)
     }
 
+    #[instrument(skip(self))]
     pub fn getbestblockhash(&self) -> Result<BlockHash> {
         parse_hash(&self.request("getbestblockhash", json!([]))?)
     }
 
+    #[instrument(skip(self, blockhash))]
     pub fn getblockheader(&self, blockhash: &BlockHash) -> Result<BlockHeader> {
         header_from_value(self.request("getblockheader", json!([blockhash, /*verbose=*/ false]))?)
     }
@@ -503,6 +515,7 @@ impl Daemon {
         Ok(blocks)
     }
 
+    #[instrument(skip(self, txhashes))]
     pub fn gettransactions(&self, txhashes: &[&Txid]) -> Result<Vec<Transaction>> {
         let params_list: Vec<Value> = txhashes
             .iter()
@@ -532,6 +545,7 @@ impl Daemon {
         tx_from_value(value)
     }
 
+    #[instrument(skip(self))]
     pub fn getmempooltxids(&self) -> Result<HashSet<Txid>> {
         let res = self.request("getrawmempool", json!([/*verbose=*/ false]))?;
         Ok(serde_json::from_value(res).chain_err(|| "invalid getrawmempool reply")?)
@@ -610,6 +624,7 @@ impl Daemon {
     }
 
     // Returns a list of BlockHeaders in ascending height (i.e. the tip is last).
+    #[instrument(skip(self, indexed_headers, bestblockhash))]
     pub fn get_new_headers(
         &self,
         indexed_headers: &HeaderList,

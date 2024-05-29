@@ -1,5 +1,6 @@
 use crate::chain::{Network, Transaction, TxOut};
 use std::collections::HashMap;
+use tracing::instrument;
 
 const VSIZE_BIN_WIDTH: u64 = 50_000; // in vbytes
 
@@ -10,6 +11,7 @@ pub struct TxFeeInfo {
 }
 
 impl TxFeeInfo {
+    #[instrument(skip(tx, prevouts, network))]
     pub fn new(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, network: Network) -> Self {
         let fee = get_tx_fee(tx, prevouts, network);
 
@@ -41,6 +43,7 @@ pub fn get_tx_fee(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, _network: N
     total_in - total_out
 }
 
+#[instrument(skip(tx, _prevouts, network))]
 #[cfg(feature = "liquid")]
 pub fn get_tx_fee(tx: &Transaction, _prevouts: &HashMap<u32, &TxOut>, network: Network) -> u64 {
     tx.fee_in(*network.native_asset())
