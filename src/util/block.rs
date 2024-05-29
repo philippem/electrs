@@ -8,6 +8,7 @@ use std::iter::FromIterator;
 use std::slice;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime as DateTime;
+use tracing::instrument;
 
 const MTP_SPAN: usize = 11;
 
@@ -160,6 +161,7 @@ impl HeaderList {
             .collect()
     }
 
+    #[instrument(skip(self, new_headers))]
     pub fn apply(&mut self, new_headers: Vec<HeaderEntry>) {
         // new_headers[i] -> new_headers[i - 1] (i.e. new_headers.last() is the tip)
         for i in 1..new_headers.len() {
@@ -197,6 +199,7 @@ impl HeaderList {
         }
     }
 
+    #[instrument(skip(self, blockhash))]
     pub fn header_by_blockhash(&self, blockhash: &BlockHash) -> Option<&HeaderEntry> {
         let height = self.heights.get(blockhash)?;
         let header = self.headers.get(*height)?;

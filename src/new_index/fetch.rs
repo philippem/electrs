@@ -13,6 +13,7 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::thread;
+use tracing::instrument;
 
 use crate::chain::{Block, BlockHash};
 use crate::daemon::Daemon;
@@ -25,6 +26,7 @@ pub enum FetchFrom {
     BlkFiles,
 }
 
+#[instrument(skip(from, daemon, new_headers))]
 pub fn start_fetcher(
     from: FetchFrom,
     daemon: &Daemon,

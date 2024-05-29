@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::iter::FromIterator;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use tracing::instrument;
 
 use crate::chain::{deserialize, Network, OutPoint, Transaction, TxOut, Txid};
 use crate::config::Config;
@@ -276,10 +277,12 @@ impl Mempool {
         &self.backlog_stats.0
     }
 
+    #[instrument(skip(self))]
     pub fn old_txids(&self) -> HashSet<Txid> {
         return HashSet::from_iter(self.txstore.keys().cloned());
     }
 
+    #[instrument(skip(self))]
     pub fn update_backlog_stats(&mut self) {
         let _timer = self
             .latency
@@ -296,6 +299,7 @@ impl Mempool {
         }
     }
 
+    #[instrument(skip(self, txs))]
     fn add(&mut self, txs: Vec<Transaction>) {
         self.delta
             .with_label_values(&["add"])
@@ -403,6 +407,7 @@ impl Mempool {
         Ok(self.lookup_txos(&outpoints)?.remove(outpoint).unwrap())
     }
 
+    #[instrument(skip(self, outpoints))]
     pub fn lookup_txos(&self, outpoints: &BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
         let _timer = self
             .latency
@@ -446,6 +451,7 @@ impl Mempool {
             .collect()
     }
 
+    #[instrument(skip(self, to_remove))]
     fn remove(&mut self, to_remove: HashSet<&Txid>) {
         self.delta
             .with_label_values(&["remove"])
@@ -491,6 +497,7 @@ impl Mempool {
             .map_or_else(|| vec![], |entries| self._history(entries, limit))
     }
 
+    #[instrument(skip(mempool, daemon))]
     pub fn update(mempool: &Arc<RwLock<Mempool>>, daemon: &Daemon) -> Result<()> {
         let _timer = mempool.read().unwrap().latency.with_label_values(&["update"]).start_timer();
 
@@ -550,6 +557,7 @@ impl BacklogStats {
         }
     }
 
+    #[instrument(skip(feeinfo))]
     fn new(feeinfo: &HashMap<Txid, TxFeeInfo>) -> Self {
         let (count, vsize, total_fee) = feeinfo
             .values()

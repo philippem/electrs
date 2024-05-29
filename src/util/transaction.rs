@@ -2,6 +2,7 @@ use crate::chain::{BlockHash, OutPoint, Transaction, TxIn, TxOut, Txid};
 use crate::util::BlockId;
 
 use std::collections::HashMap;
+use tracing::instrument;
 
 #[cfg(feature = "liquid")]
 lazy_static! {
@@ -75,6 +76,7 @@ pub fn is_spendable(txout: &TxOut) -> bool {
     return !txout.is_fee() && !txout.script_pubkey.is_provably_unspendable();
 }
 
+#[instrument(skip(tx, txos, allow_missing))]
 pub fn extract_tx_prevouts<'a>(
     tx: &Transaction,
     txos: &'a HashMap<OutPoint, TxOut>,
