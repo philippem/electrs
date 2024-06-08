@@ -497,7 +497,7 @@ impl Mempool {
             .map_or_else(|| vec![], |entries| self._history(entries, limit))
     }
 
-    #[instrument(skip(mempool, daemon))]
+    #[instrument(name="Mempool::update", skip(mempool, daemon))]
     pub fn update(mempool: &Arc<RwLock<Mempool>>, daemon: &Daemon) -> Result<()> {
         let _timer = mempool.read().unwrap().latency.with_label_values(&["update"]).start_timer();
 

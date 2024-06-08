@@ -17,6 +17,7 @@ use serde_json::{from_str, Value};
 use bitcoin::consensus::encode::serialize_hex;
 #[cfg(feature = "liquid")]
 use elements::encode::serialize_hex;
+use tracing::instrument;
 
 use crate::chain::Txid;
 use crate::config::{Config, RpcLogging};
@@ -413,6 +414,7 @@ impl Connection {
         }))
     }
 
+    #[instrument(skip(self, params, id))]
     fn handle_command(&mut self, method: &str, params: &[Value], id: &Value) -> Result<Value> {
         let timer = self
             .stats

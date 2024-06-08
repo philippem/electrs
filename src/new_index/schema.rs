@@ -263,7 +263,7 @@ impl Indexer {
         Ok(result)
     }
 
-    #[instrument(skip(self, daemon))]
+    #[instrument(name="Indexer::update", skip(self, daemon))]
     pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;

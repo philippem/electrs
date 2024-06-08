@@ -276,6 +276,8 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    #[instrument(name="Daemon::new", skip_all)]
+
     pub fn new(
         daemon_dir: &PathBuf,
         blocks_dir: &PathBuf,
@@ -365,7 +367,7 @@ impl Daemon {
         self.network.magic()
     }
 
-    #[instrument(skip(self, method, request))]
+    #[instrument(skip(self, request))]
     fn call_jsonrpc(&self, method: &str, request: &Value) -> Result<Value> {
         let mut conn = self.conn.lock().unwrap();
         let timer = self.latency.with_label_values(&[method]).start_timer();
@@ -383,7 +385,7 @@ impl Daemon {
         Ok(result)
     }
 
-    #[instrument(skip(self, method, params_list))]
+    #[instrument(skip(self, params_list))]
     fn handle_request_batch(&self, method: &str, params_list: &[Value]) -> Result<Vec<Value>> {
         let id = self.message_id.next();
         let chunks = params_list
@@ -406,7 +408,7 @@ impl Daemon {
         Ok(results)
     }
 
-    #[instrument(skip(self, method, params_list))]
+    #[instrument(skip(self, params_list))]
     fn retry_request_batch(&self, method: &str, params_list: &[Value]) -> Result<Vec<Value>> {
         loop {
             match self.handle_request_batch(method, params_list) {
@@ -422,25 +424,27 @@ impl Daemon {
         }
     }
 
-    #[instrument(skip(self, method, params))]
+    #[instrument(name = "Daemon::request", skip(self, params))]
     fn request(&self, method: &str, params: Value) -> Result<Value> {
         let mut values = self.retry_request_batch(method, &[params])?;
         assert_eq!(values.len(), 1);
         Ok(values.remove(0))
     }
 
-    #[instrument(skip(self, method, params_list))]
+    #[instrument(name = "Daemon::requests", skip(self, params_list))]
     fn requests(&self, method: &str, params_list: &[Value]) -> Result<Vec<Value>> {
         self.retry_request_batch(method, params_list)
     }
 
     // bitcoind JSONRPC API:
 
+    #[instrument(skip(self))]
     pub fn getblockchaininfo(&self) -> Result<BlockchainInfo> {
         let info: Value = self.request("getblockchaininfo", json!([]))?;
         Ok(from_value(info).chain_err(|| "invalid blockchain info")?)
     }
 
+    #[instrument(skip(self))]
     fn getnetworkinfo(&self) -> Result<NetworkInfo> {
         let info: Value = self.request("getnetworkinfo", json!([]))?;
         Ok(from_value(info).chain_err(|| "invalid network info")?)
@@ -456,6 +460,7 @@ impl Daemon {
         header_from_value(self.request("getblockheader", json!([blockhash, /*verbose=*/ false]))?)
     }
 
+    #[instrument(skip(self, heights))]
     pub fn getblockheaders(&self, heights: &[usize]) -> Result<Vec<BlockHeader>> {
         let heights: Vec<Value> = heights.iter().map(|height| json!([height])).collect();
         let params_list: Vec<Value> = self
@@ -470,6 +475,7 @@ impl Daemon {
         Ok(result)
     }
 
+    #[instrument(skip_all)]
     pub fn getblock(&self, blockhash: &BlockHash) -> Result<Block> {
         let block =
             block_from_value(self.request("getblock", json!([blockhash, /*verbose=*/ false]))?)?;
@@ -477,10 +483,12 @@ impl Daemon {
         Ok(block)
     }
 
+    #[instrument(skip_all)]
     pub fn getblock_raw(&self, blockhash: &BlockHash, verbose: u32) -> Result<Value> {
         self.request("getblock", json!([blockhash, verbose]))
     }
 
+    #[instrument(skip_all)]
     pub fn getblocks(&self, blockhashes: &[BlockHash]) -> Result<Vec<Block>> {
         let params_list: Vec<Value> = blockhashes
             .iter()
@@ -494,7 +502,7 @@ impl Daemon {
         Ok(blocks)
     }
 
-    #[instrument(skip(self, txhashes))]
+    #[instrument(skip_all)]
     pub fn gettransactions(&self, txhashes: &[&Txid]) -> Result<Vec<Transaction>> {
         let params_list: Vec<Value> = txhashes
             .iter()
@@ -510,6 +518,7 @@ impl Daemon {
         Ok(txs)
     }
 
+    #[instrument(skip_all)]
     pub fn gettransaction_raw(
         &self,
         txid: &Txid,
@@ -519,6 +528,7 @@ impl Daemon {
         self.request("getrawtransaction", json!([txid, verbose, blockhash]))
     }
 
+    #[instrument(skip_all)]
     pub fn getmempooltx(&self, txhash: &Txid) -> Result<Transaction> {
         let value = self.request("getrawtransaction", json!([txhash, /*verbose=*/ false]))?;
         tx_from_value(value)
@@ -530,10 +540,12 @@ impl Daemon {
         Ok(serde_json::from_value(res).chain_err(|| "invalid getrawmempool reply")?)
     }
 
+    #[instrument(skip_all)]
     pub fn broadcast(&self, tx: &Transaction) -> Result<Txid> {
         self.broadcast_raw(&serialize_hex(tx))
     }
 
+    #[instrument(skip_all)]
     pub fn broadcast_raw(&self, txhex: &str) -> Result<Txid> {
         let txid = self.request("sendrawtransaction", json!([txhex]))?;
         Ok(
@@ -576,6 +588,7 @@ impl Daemon {
             .collect())
     }
 
+    #[instrument(skip_all)]
     fn get_all_headers(&self, tip: &BlockHash) -> Result<Vec<BlockHeader>> {
         let info: Value = self.request("getblockheader", json!([tip]))?;
         let tip_height = info
@@ -635,6 +648,7 @@ impl Daemon {
         new_headers.reverse(); // so the tip is the last vector entry
         Ok(new_headers)
     }
+
 
     pub fn get_relayfee(&self) -> Result<f64> {
         let relayfee = self.getnetworkinfo()?.relayfee;
