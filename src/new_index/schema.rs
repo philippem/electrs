@@ -1039,7 +1039,7 @@ fn get_previous_txos(block_entries: &[BlockEntry]) -> BTreeSet<OutPoint> {
         .collect()
 }
 
-#[instrument(skip(txstore_db, outpoints, allow_missing))]
+#[instrument(skip(txstore_db, outpoints, allow_missing), name = "schema::lookup_txos")]
 fn lookup_txos(
     txstore_db: &DB,
     outpoints: &BTreeSet<OutPoint>,
@@ -1067,7 +1067,7 @@ fn lookup_txos(
     })
 }
 
-#[instrument(skip(txstore_db, outpoint))]
+#[instrument(skip(txstore_db, outpoint), name = "schema::lookup_txo")]
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
     txstore_db
         .get(&TxOutRow::key(&outpoint))
