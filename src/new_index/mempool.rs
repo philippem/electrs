@@ -108,6 +108,7 @@ impl Mempool {
         self.txstore.get(txid).map(serialize)
     }
 
+    #[instrument(skip_all, name="Mempool::lookup_spend")]
     pub fn lookup_spend(&self, outpoint: &OutPoint) -> Option<SpendingInput> {
         self.edges.get(outpoint).map(|(txid, vin)| SpendingInput {
             txid: *txid,
@@ -124,6 +125,7 @@ impl Mempool {
         Some(self.feeinfo.get(txid)?.fee)
     }
 
+    #[instrument(skip_all, name="Mempool::has_unconfirmed_parents")]
     pub fn has_unconfirmed_parents(&self, txid: &Txid) -> bool {
         let tx = match self.txstore.get(txid) {
             Some(tx) => tx,
@@ -134,6 +136,7 @@ impl Mempool {
             .any(|txin| self.txstore.contains_key(&txin.previous_output.txid))
     }
 
+    #[instrument(skip_all, name="Mempool::history")]
     pub fn history(&self, scripthash: &[u8], limit: usize) -> Vec<Transaction> {
         let _timer = self.latency.with_label_values(&["history"]).start_timer();
         self.history
@@ -141,6 +144,7 @@ impl Mempool {
             .map_or_else(|| vec![], |entries| self._history(entries, limit))
     }
 
+    #[instrument(skip_all, name="Mempool::_history")]
     fn _history(&self, entries: &[TxHistoryInfo], limit: usize) -> Vec<Transaction> {
         entries
             .iter()
@@ -152,6 +156,7 @@ impl Mempool {
             .collect()
     }
 
+    #[instrument(skip_all, name="Mempool::history_txids")]
     pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<Txid> {
         let _timer = self
             .latency
@@ -168,6 +173,7 @@ impl Mempool {
         }
     }
 
+    #[instrument(skip_all, name="Mempool::utxo")]
     pub fn utxo(&self, scripthash: &[u8]) -> Vec<Utxo> {
         let _timer = self.latency.with_label_values(&["utxo"]).start_timer();
         let entries = match self.history.get(scripthash) {
@@ -210,6 +216,7 @@ impl Mempool {
             .collect()
     }
 
+    #[instrument(skip_all, name="Mempool::stats")]
     // @XXX avoid code duplication with ChainQuery::stats()?
     pub fn stats(&self, scripthash: &[u8]) -> ScriptStats {
         let _timer = self.latency.with_label_values(&["stats"]).start_timer();
@@ -259,12 +266,14 @@ impl Mempool {
         stats
     }
 
+    #[instrument(skip_all, name="Mempool::txids")]
     // Get all txids in the mempool
     pub fn txids(&self) -> Vec<&Txid> {
         let _timer = self.latency.with_label_values(&["txids"]).start_timer();
         self.txstore.keys().collect()
     }
 
+    #[instrument(skip_all, name="Mempool::recent_txs_overview")]
     // Get an overview of the most recent transactions
     pub fn recent_txs_overview(&self) -> Vec<&TxOverview> {
         // We don't bother ever deleting elements from the recent list.
@@ -273,16 +282,18 @@ impl Mempool {
         self.recent.iter().collect()
     }
 
+    #[instrument(skip_all, name="Mempool::backlog_stats")]
     pub fn backlog_stats(&self) -> &BacklogStats {
         &self.backlog_stats.0
     }
 
-    #[instrument(skip(self))]
+
+    #[instrument(skip_all, name="Mempool::old_txids")]
     pub fn old_txids(&self) -> HashSet<Txid> {
         return HashSet::from_iter(self.txstore.keys().cloned());
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all, name="Mempool::update_backlog_stats")]
     pub fn update_backlog_stats(&mut self) {
         let _timer = self
             .latency
@@ -291,6 +302,7 @@ impl Mempool {
         self.backlog_stats = (BacklogStats::new(&self.feeinfo), Instant::now());
     }
 
+    #[instrument(skip_all, name="Mempool::add_by_txid")]
     pub fn add_by_txid(&mut self, daemon: &Daemon, txid: &Txid) {
         if self.txstore.get(txid).is_none() {
             if let Ok(tx) = daemon.getmempooltx(&txid) {
@@ -299,7 +311,7 @@ impl Mempool {
         }
     }
 
-    #[instrument(skip(self, txs))]
+    #[instrument(skip_all, name="Mempool::add")]
     fn add(&mut self, txs: Vec<Transaction>) {
         self.delta
             .with_label_values(&["add"])
@@ -401,13 +413,14 @@ impl Mempool {
         }
     }
 
+    #[instrument(skip_all, name="Mempool::lookup_txo")]
     pub fn lookup_txo(&self, outpoint: &OutPoint) -> Result<TxOut> {
         let mut outpoints = BTreeSet::new();
         outpoints.insert(*outpoint);
         Ok(self.lookup_txos(&outpoints)?.remove(outpoint).unwrap())
     }
 
-    #[instrument(skip(self, outpoints))]
+    #[instrument(skip_all, name="Mempool::lookup_txos")]
     pub fn lookup_txos(&self, outpoints: &BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
         let _timer = self
             .latency
@@ -433,6 +446,7 @@ impl Mempool {
         Ok(txos)
     }
 
+    #[instrument(skip_all, name="Mempool::get_prevous")]
     fn get_prevouts(&self, txids: &[Txid]) -> BTreeSet<OutPoint> {
         let _timer = self
             .latency
@@ -451,7 +465,7 @@ impl Mempool {
             .collect()
     }
 
-    #[instrument(skip(self, to_remove))]
+    #[instrument(skip_all, name="Mempool::remove")]
     fn remove(&mut self, to_remove: HashSet<&Txid>) {
         self.delta
             .with_label_values(&["remove"])
@@ -487,6 +501,7 @@ impl Mempool {
     }
 
     #[cfg(feature = "liquid")]
+    #[instrument(skip_all, name="Mempool::remove")]
     pub fn asset_history(&self, asset_id: &AssetId, limit: usize) -> Vec<Transaction> {
         let _timer = self
             .latency
@@ -497,7 +512,7 @@ impl Mempool {
             .map_or_else(|| vec![], |entries| self._history(entries, limit))
     }
 
-    #[instrument(skip(mempool, daemon))]
+    #[instrument(skip_all, name="Mempool::update")]
     pub fn update(mempool: &Arc<RwLock<Mempool>>, daemon: &Daemon) -> Result<()> {
         let _timer = mempool.read().unwrap().latency.with_label_values(&["update"]).start_timer();
 
@@ -557,7 +572,7 @@ impl BacklogStats {
         }
     }
 
-    #[instrument(skip(feeinfo))]
+    #[instrument(skip_all, name="Mempool::new")]
     fn new(feeinfo: &HashMap<Txid, TxFeeInfo>) -> Self {
         let (count, vsize, total_fee) = feeinfo
             .values()
