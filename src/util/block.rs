@@ -85,6 +85,7 @@ impl HeaderList {
         }
     }
 
+    #[instrument(skip_all, name="block::new")]
     pub fn new(
         mut headers_map: HashMap<BlockHash, BlockHeader>,
         tip_hash: BlockHash,
@@ -122,6 +123,7 @@ impl HeaderList {
         headers
     }
 
+    #[instrument(skip_all, name="block::HeaderList::order")]
     pub fn order(&self, new_headers: Vec<BlockHeader>) -> Vec<HeaderEntry> {
         // header[i] -> header[i-1] (i.e. header.last() is the tip)
         struct HashedHeader {
@@ -161,7 +163,7 @@ impl HeaderList {
             .collect()
     }
 
-    #[instrument(skip(self, new_headers))]
+    #[instrument(skip_all, name="block::HeaderList::apply")]
     pub fn apply(&mut self, new_headers: Vec<HeaderEntry>) {
         // new_headers[i] -> new_headers[i - 1] (i.e. new_headers.last() is the tip)
         for i in 1..new_headers.len() {
@@ -199,7 +201,7 @@ impl HeaderList {
         }
     }
 
-    #[instrument(skip(self, blockhash))]
+    #[instrument(skip_all, name="block::HeaderList::header_by_blockhash")]
     pub fn header_by_blockhash(&self, blockhash: &BlockHash) -> Option<&HeaderEntry> {
         let height = self.heights.get(blockhash)?;
         let header = self.headers.get(*height)?;
@@ -210,6 +212,7 @@ impl HeaderList {
         }
     }
 
+    #[instrument(skip_all, name="block::HeaderList::header_by_height")]
     pub fn header_by_height(&self, height: usize) -> Option<&HeaderEntry> {
         self.headers.get(height).map(|entry| {
             assert_eq!(entry.height(), height);

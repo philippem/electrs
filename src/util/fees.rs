@@ -11,7 +11,6 @@ pub struct TxFeeInfo {
 }
 
 impl TxFeeInfo {
-    #[instrument(skip(tx, prevouts, network))]
     pub fn new(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, network: Network) -> Self {
         let fee = get_tx_fee(tx, prevouts, network);
 
@@ -43,12 +42,12 @@ pub fn get_tx_fee(tx: &Transaction, prevouts: &HashMap<u32, &TxOut>, _network: N
     total_in - total_out
 }
 
-#[instrument(skip(tx, _prevouts, network))]
 #[cfg(feature = "liquid")]
 pub fn get_tx_fee(tx: &Transaction, _prevouts: &HashMap<u32, &TxOut>, network: Network) -> u64 {
     tx.fee_in(*network.native_asset())
 }
 
+#[instrument(skip_all, name="fees::make_fee_histogram")]
 pub fn make_fee_histogram(mut entries: Vec<&TxFeeInfo>) -> Vec<(f64, u64)> {
     entries.sort_unstable_by(|e1, e2| e1.fee_per_vbyte.partial_cmp(&e2.fee_per_vbyte).unwrap());
 
