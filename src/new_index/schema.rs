@@ -1050,8 +1050,9 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
         .collect()
 }
 
-#[instrument(skip_all, name="schema::add_transaction")]
+
 // called too often to instrument
+//#[instrument(skip_all, name="schema::add_transaction")]
 fn add_transaction(
     tx: &Transaction,
     blockhash: FullHash,
