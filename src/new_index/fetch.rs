@@ -68,6 +68,7 @@ impl<T> Fetcher<T> {
     }
 }
 
+#[instrument(skip_all, name="fetch::bitcoind_fetcher")]
 fn bitcoind_fetcher(
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
@@ -105,6 +106,7 @@ fn bitcoind_fetcher(
     ))
 }
 
+#[instrument(skip_all, name="fetch::blkfiles_fetcher")]
 fn blkfiles_fetcher(
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
@@ -151,6 +153,7 @@ fn blkfiles_fetcher(
     ))
 }
 
+#[instrument(skip_all, name="fetch::blkfiles_reader")]
 fn blkfiles_reader(blk_files: Vec<PathBuf>) -> Fetcher<Vec<u8>> {
     let chan = SyncChannel::new(1);
     let sender = chan.sender();
@@ -170,6 +173,7 @@ fn blkfiles_reader(blk_files: Vec<PathBuf>) -> Fetcher<Vec<u8>> {
     )
 }
 
+#[instrument(skip_all, name="fetch::blkfiles_parser")]
 fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBlock>> {
     let chan = SyncChannel::new(1);
     let sender = chan.sender();
@@ -188,6 +192,7 @@ fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBloc
     )
 }
 
+#[instrument(skip_all, name="fetch::parse_blocks")]
 fn parse_blocks(blob: Vec<u8>, magic: u32) -> Result<Vec<SizedBlock>> {
     let mut cursor = Cursor::new(&blob);
     let mut slices = vec![];
