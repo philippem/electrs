@@ -58,7 +58,10 @@ fn init_tracing_subscriber(service_name: &str) -> OtelGuard {
 
     let reg = tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer().with_thread_ids(true).compact());
+        .with(tracing_subscriber::fmt::layer()
+            .with_thread_ids(true)
+            .with_ansi(false)
+            .compact());
     let _ = if let Ok(endpoint) = var("OTLP_ENDPOINT") {
         reg.with(OpenTelemetryLayer::new(init_tracer(resource, &endpoint)))
             .try_init()
