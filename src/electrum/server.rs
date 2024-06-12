@@ -643,7 +643,7 @@ impl Connection {
 
     pub fn run(mut self, receiver: Receiver<Message>) {
         self.stats.clients.inc();
-        conditionally_log_rpc_event!(self, json!({ "event": "connection established" }));
+        //conditionally_log_rpc_event!(self, json!({ "event": "connection established" }));
 
         let reader = BufReader::new(self.stream.try_clone().expect("failed to clone TcpStream"));
         let sender = self.sender.clone();
@@ -661,7 +661,7 @@ impl Connection {
             .sub(self.status_hashes.len() as i64);
 
         debug!("[{}] shutting down connection", self.addr);
-        conditionally_log_rpc_event!(self, json!({ "event": "connection closed" }));
+        //conditionally_log_rpc_event!(self, json!({ "event": "connection closed" }));
 
         let _ = self.stream.shutdown(Shutdown::Both);
         if let Err(err) = child.join().expect("receiver panicked") {
