@@ -20,6 +20,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use tracing::instrument;
 
 use crate::chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
@@ -238,6 +239,7 @@ impl Indexer {
             .collect()
     }
 
+    #[instrument(skip_all, name="schema::start_auto_compactions")]
     fn start_auto_compactions(&self, db: &DB) {
         let key = b"F".to_vec();
         if db.get(&key).is_none() {
@@ -248,6 +250,7 @@ impl Indexer {
         db.enable_auto_compaction();
     }
 
+    #[instrument(skip_all, name="schema::get_new_headers")]
     fn get_new_headers(&self, daemon: &Daemon, tip: &BlockHash) -> Result<Vec<HeaderEntry>> {
         let headers = self.store.indexed_headers.read().unwrap();
         let new_headers = daemon.get_new_headers(&headers, &tip)?;
@@ -259,6 +262,7 @@ impl Indexer {
         Ok(result)
     }
 
+    #[instrument(skip_all, name="schema::update")]
     pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;
@@ -376,8 +380,6 @@ impl ChainQuery {
     }
 
     pub fn get_block_txids(&self, hash: &BlockHash) -> Option<Vec<Txid>> {
-        let _timer = self.start_timer("get_block_txids");
-
         if self.light_mode {
             // TODO fetch block as binary from REST API instead of as hex
             let mut blockinfo = self.daemon.getblock_raw(hash, 1).ok()?;
@@ -458,6 +460,7 @@ impl ChainQuery {
             &TxHistoryRow::prefix_height(code, &hash[..], start_height as u32),
         )
     }
+
     fn history_iter_scan_reverse(&self, code: u8, hash: &[u8]) -> ReverseScanIterator {
         self.store.history_db.iter_scan_reverse(
             &TxHistoryRow::filter(code, &hash[..]),
@@ -475,6 +478,7 @@ impl ChainQuery {
         self._history(b'H', scripthash, last_seen_txid, limit)
     }
 
+    #[instrument(skip_all, name="schema::ChainQuery::_history")]
     fn _history(
         &self,
         code: u8,
@@ -509,7 +513,7 @@ impl ChainQuery {
             .collect()
     }
 
-    pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
+        pub fn history_txids(&self, scripthash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
         // scripthash lookup
         self._history_txids(b'H', scripthash, limit)
     }
@@ -797,6 +801,7 @@ impl ChainQuery {
             .map(BlockId::from)
     }
 
+
     pub fn best_height(&self) -> usize {
         self.store.indexed_headers.read().unwrap().len() - 1
     }
@@ -879,6 +884,7 @@ impl ChainQuery {
                 })
             })
     }
+
     pub fn tx_confirming_block(&self, txid: &Txid) -> Option<BlockId> {
         let _timer = self.start_timer("tx_confirming_block");
         let headers = self.store.indexed_headers.read().unwrap();
@@ -995,6 +1001,7 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
         .collect()
 }
 
+
 fn add_transaction(
     tx: &Transaction,
     blockhash: FullHash,
@@ -1069,6 +1076,7 @@ fn index_blocks(
         .flatten()
         .collect()
 }
+
 
 // TODO: return an iterator?
 fn index_transaction(
