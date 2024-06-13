@@ -174,7 +174,6 @@ fn tcp_connect(addr: SocketAddr, signal: &Waiter) -> Result<TcpStream> {
 }
 
 impl Connection {
-    #[instrument(skip_all, name="Daemon::Connection::new")]
     fn new(
         addr: SocketAddr,
         cookie_getter: Arc<dyn CookieGetter>,
@@ -194,12 +193,10 @@ impl Connection {
         })
     }
 
-    #[instrument(skip(self))]
     fn reconnect(&self) -> Result<Connection> {
         Connection::new(self.addr, self.cookie_getter.clone(), self.signal.clone())
     }
 
-    #[instrument(skip_all, name="Daemon::Connection::send")]
     fn send(&mut self, request: &str) -> Result<()> {
         let cookie = &self.cookie_getter.get()?;
         let msg = format!(
@@ -214,7 +211,6 @@ impl Connection {
     }
 
 
-    #[instrument(skip_all, name="Daemon::Connection::recv")]
     fn recv(&mut self) -> Result<String> {
         // TODO: use proper HTTP parser.
         let mut in_header = true;
@@ -373,7 +369,6 @@ impl Daemon {
         Ok(daemon)
     }
 
-    #[instrument(skip(self))]
     pub fn reconnect(&self) -> Result<Daemon> {
         Ok(Daemon {
             daemon_dir: self.daemon_dir.clone(),
@@ -404,7 +399,6 @@ impl Daemon {
         self.network.magic()
     }
 
-    #[instrument(skip_all, name="Daemon::call_jsonrpc")]
     fn call_jsonrpc(&self, method: &str, request: &Value) -> Result<Value> {
         let mut conn = self.conn.lock().unwrap();
         let timer = self.latency.with_label_values(&[method]).start_timer();
