@@ -24,8 +24,6 @@ use tokio::sync::oneshot;
 use std::fs;
 use std::str::FromStr;
 
-use tracing::instrument;
-
 #[cfg(feature = "liquid")]
 use {
     crate::elements::{ebcompact::*, peg::PegoutValue, AssetSorting, IssuanceValue},
@@ -581,7 +579,6 @@ impl Handle {
     }
 }
 
-#[instrument(skip_all, name="rest::handle_request")]
 fn handle_request(
     method: Method,
     uri: hyper::Uri,
@@ -1157,7 +1154,6 @@ fn json_response<T: Serialize>(value: T, ttl: u32) -> Result<Response<Body>, Htt
         .unwrap())
 }
 
-#[instrument(skip_all, name="rest::blocks")]
 fn blocks(query: &Query, start_height: Option<usize>) -> Result<Response<Body>, HttpError> {
     let mut values = Vec::new();
     let mut current_hash = match start_height {
