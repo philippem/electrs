@@ -26,7 +26,8 @@ bitcoin = { version = "0.31", features = ["serde"] }
 clap = "2.33.3"
 crossbeam-channel = "0.5.0"
 dirs = "5.0.1"
-elements = { version = "0.24", features = ["serde"], optional = true }
+#elements = { version = "0.25.1", features = ["serde"], optional = true }
+elements = { path = "../../ElementsProject/rust-elements", features  =[ "serde"], optional = true }
 error-chain = "0.12.4"
 glob = "0.3"
 hex = { package = "hex-conservative", version = "0.1.1" }

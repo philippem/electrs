@@ -124,6 +124,7 @@ struct TransactionValue {
     vout: Vec<TxOutValue>,
     size: u32,
     weight: u64,
+    funprop: u64,
     fee: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<TransactionStatus>,
@@ -157,6 +158,8 @@ impl TransactionValue {
         #[cfg(not(feature = "liquid"))] // rust-bitcoin has a wrapper Weight type
         let weight = weight.to_wu();
 
+        let funprop = tx.funprop();
+
         TransactionValue {
             txid: tx.txid(),
             #[cfg(not(feature = "liquid"))]
@@ -168,6 +171,7 @@ impl TransactionValue {
             vout: vouts,
             size: tx.total_size() as u32,
             weight: weight as u64,
+            funprop: funprop as u64,
             fee,
             status: Some(TransactionStatus::from(blockid)),
         }
