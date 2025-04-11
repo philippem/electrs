@@ -16,6 +16,8 @@ pub use self::transaction::{
     serialize_outpoint, TransactionStatus, TxInput,
 };
 
+pub use self::transaction::optional_value_for_newer_blocks;
+
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
 use std::thread;

@@ -164,7 +164,7 @@ impl Query {
 
     #[trace]
     pub fn get_tx_status(&self, txid: &Txid) -> TransactionStatus {
-        TransactionStatus::from(self.chain.tx_confirming_block(txid))
+        TransactionStatus::from(&self.chain.tx_confirming_block(txid))
     }
 
     #[trace]

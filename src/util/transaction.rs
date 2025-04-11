@@ -26,8 +26,8 @@ pub struct TransactionStatus {
     pub block_time: Option<u32>,
 }
 
-impl From<Option<BlockId>> for TransactionStatus {
-    fn from(blockid: Option<BlockId>) -> TransactionStatus {
+impl From<&Option<BlockId>> for TransactionStatus {
+    fn from(blockid: &Option<BlockId>) -> TransactionStatus {
         match blockid {
             Some(b) => TransactionStatus {
                 confirmed: true,
@@ -44,6 +44,27 @@ impl From<Option<BlockId>> for TransactionStatus {
         }
     }
 }
+
+
+#[cfg(feature = "liquid")]
+pub fn optional_value_for_newer_blocks(blockid: &Option<BlockId>,
+                                       block_time: u32,
+                                       value: usize) -> Option<usize> {
+    match blockid {
+        Some(b) => {
+            if b.time > block_time {
+                Some(value)
+            } else {
+                None
+            }
+        },
+        None => {
+            // An unconfirmed block.
+            Some(value)
+        }
+    }
+}
+
 
 #[derive(Serialize, Deserialize)]
 pub struct TxInput {
