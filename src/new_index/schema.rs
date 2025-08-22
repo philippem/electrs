@@ -92,6 +92,12 @@ impl Store {
         }
     }
 
+    pub fn print_all_stats(&self) -> () {
+        self.txstore_db().print_stats("txstore_db");
+        self.history_db().print_stats("history_db");
+        self.cache_db().print_stats("cache_db");
+    }
+
     pub fn txstore_db(&self) -> &DB {
         &self.txstore_db
     }

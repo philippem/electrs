@@ -106,6 +106,22 @@ impl DB {
         db
     }
 
+    pub fn print_stats(&self, name: &str) -> () {
+        println!("{} db {:?}", name, self.db.path());
+
+        if let Some(v) = self.db.property_value("rocksdb.compression-ratio-at-level0").unwrap() {
+            println!("rocksdb.compression-ratio-at-level0: {}", v);
+        }
+
+        if let Some(v) = self.db.property_value("rocksdb.compression-ratio-at-level1").unwrap() {
+            println!("rocksdb.compression-ratio-at-level1: {}", v);
+        }
+
+        if let Some(v) = self.db.property_value("rocksdb.compression-ratio-at-level2").unwrap() {
+            println!("rocksdb.compression-ratio-at-level2: {}", v);
+        }
+    }
+
     pub fn full_compaction(&self) {
         // TODO: make sure this doesn't fail silently
         debug!("starting full compaction on {:?}", self.db);
