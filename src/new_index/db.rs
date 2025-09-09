@@ -80,7 +80,10 @@ pub enum DBFlush {
     Enable,
 }
 
+
 impl DB {
+
+
     pub fn open(path: &Path, config: &Config) -> DB {
         debug!("opening DB at {:?}", path);
         let mut db_opts = rocksdb::Options::default();
@@ -102,8 +105,13 @@ impl DB {
         let db = DB {
             db: rocksdb::DB::open(&db_opts, path).expect("failed to open RocksDB"),
         };
+
         db.verify_compatibility(config);
         db
+    }
+
+    pub fn printstats(&self) -> () {
+        println!("db print stats");
     }
 
     pub fn full_compaction(&self) {
@@ -172,6 +180,43 @@ impl DB {
         let mut opts = rocksdb::WriteOptions::new();
         opts.set_sync(do_flush);
         opts.disable_wal(!do_flush);
+
+
+        // Example: Get the number of entries
+        if let Some(value) = self.db.property_value("rocksdb.estimate-num-keys").unwrap() {
+            println!("Estimated number of keys: {}", value);
+        }
+
+        // Example: Get the size of all SST files
+        if let Some(value) = self.db.property_value("rocksdb.total-sst-files-size").unwrap() {
+            println!("Total SST file size: {} bytes", value);
+        }
+
+        // Example: Get statistics (if enabled)
+        if let Some(stats) = self.db.property_value("rocksdb.stats").unwrap() {
+            println!("RocksDB Stats:\n{}", stats);
+        }
+
+        // rocksdb.compression-ratio-at-level0 rocksdb.compression-ratio-at-level1 rocksdb.compression-ratio-at-level2
+        if let Some(asdf) = self.db.property_value("rocksdb.compression-ratio-at-level0").unwrap() {
+            println!("RocksDB CompressionRatio level0:\n{}", asdf);
+        }
+
+
+        // rocksdb.compression-ratio-at-level0 rocksdb.compression-ratio-at-level1 rocksdb.compression-ratio-at-level2
+        if let Some(asdf) = self.db.property_value("rocksdb.compression-ratio-at-level1").unwrap() {
+            println!("RocksDB CompressionRatio level1:\n{}", asdf);
+        }
+
+        // rocksdb.compression-ratio-at-level0 rocksdb.compression-ratio-at-level1 rocksdb.compression-ratio-at-level2
+        if let Some(asdf) = self.db.property_value("rocksdb.compression-ratio-at-level2").unwrap() {
+            println!("RocksDB CompressionRatio level2:\n{}", asdf);
+        }
+
+        if let Some(value) = self.db.property_int_value("rocksdb.num-running-compactions").unwrap() {
+            println!("Number of running compactions: {}", value);
+        }
+
         self.db.write_opt(batch, &opts).unwrap();
     }
 

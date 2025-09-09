@@ -58,6 +58,10 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn printstats() {
+        print!("db print stats");
+    }
+    
     pub fn open(path: &Path, config: &Config) -> Self {
         let txstore_db = DB::open(&path.join("txstore"), config);
         let added_blockhashes = load_blockhashes(&txstore_db, &BlockRow::done_filter());

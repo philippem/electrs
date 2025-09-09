@@ -135,6 +135,8 @@ fn run_server(config: Arc<Config>, salt_rwlock: Arc<RwLock<String>>) -> Result<(
     loop {
         main_loop_count.inc();
 
+        store.txstore_db().printstats();
+
         if let Err(err) = signal.wait(Duration::from_secs(5), true) {
             info!("stopping server: {}", err);
             rest_server.stop();
