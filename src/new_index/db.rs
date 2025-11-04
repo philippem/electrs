@@ -125,9 +125,9 @@ impl DB {
 
     pub fn full_compaction(&self) {
         // TODO: make sure this doesn't fail silently
-        debug!("starting full compaction on {:?}", self.db);
+        info!("starting full compaction on {:?}", self.db);
         self.db.compact_range(None::<&[u8]>, None::<&[u8]>);
-        debug!("finished full compaction on {:?}", self.db);
+        info!("finished full compaction on {:?}", self.db);
     }
 
     pub fn enable_auto_compaction(&self) {

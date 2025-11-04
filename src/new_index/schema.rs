@@ -281,7 +281,26 @@ impl Indexer {
             to_add.len(),
             self.from
         );
-        start_fetcher(self.from, &daemon, to_add)?.map(|blocks| self.add(&blocks));
+
+        let mut fetcher_count = 0;
+        let mut blocks_fetched = 0;
+        let to_add_total = to_add.len();
+
+        start_fetcher(self.from, &daemon, to_add)?.map(|blocks|
+            {
+                if fetcher_count % 25 == 0 && to_add_total > 20 {
+                    info!("adding txes from blocks {}/{} ({:.1}%)",
+                        blocks_fetched,
+                        to_add_total,
+                        blocks_fetched as f32 / to_add_total as f32 * 100.0
+                    );
+                }
+                fetcher_count += 1;
+                blocks_fetched += blocks.len();
+
+                self.add(&blocks)
+            });
+
         self.start_auto_compactions(&self.store.txstore_db);
 
         let to_index = self.headers_to_index(&new_headers);

@@ -84,7 +84,20 @@ fn bitcoind_fetcher(
     Ok(Fetcher::from(
         chan.into_receiver(),
         spawn_thread("bitcoind_fetcher", move || {
+            let mut fetcher_count = 0;
+            let mut blocks_fetched = 0;
+            let total_blocks_fetched = new_headers.len();
             for entries in new_headers.chunks(100) {
+                if fetcher_count % 50 == 0 && total_blocks_fetched >= 50 {
+                    info!("fetching blocks {}/{} ({:.1}%)",
+                        blocks_fetched,
+                        total_blocks_fetched,
+                        blocks_fetched as f32 / total_blocks_fetched as f32 * 100.0
+                    );
+                }
+                fetcher_count += 1;
+                blocks_fetched += entries.len();
+
                 let blockhashes: Vec<BlockHash> = entries.iter().map(|e| *e.hash()).collect();
                 let blocks = daemon
                     .getblocks(&blockhashes)
@@ -129,9 +142,17 @@ fn blkfiles_fetcher(
         chan.into_receiver(),
         spawn_thread("blkfiles_fetcher", move || {
             parser.map(|sizedblocks| {
+                let block_count = sizedblocks.len();
+                let mut index = 0;
                 let block_entries: Vec<BlockEntry> = sizedblocks
                     .into_iter()
                     .filter_map(|(block, size)| {
+                        index += 1;
+                        debug!("fetch block {:}/{:} {:.2}%",
+                            index,
+                            block_count,
+                            (index/block_count) as f32/100.0
+                        );
                         let blockhash = block.block_hash();
                         entry_map
                             .remove(&blockhash)
@@ -165,7 +186,14 @@ fn blkfiles_reader(blk_files: Vec<PathBuf>, xor_key: Option<[u8; 8]>) -> Fetcher
     Fetcher::from(
         chan.into_receiver(),
         spawn_thread("blkfiles_reader", move || {
-            for path in blk_files {
+            let blk_files_len = blk_files.len();
+            for (count, path) in blk_files.iter().enumerate() {
+                info!("block file reading {:}/{:} {:.2}%",
+                    count,
+                    blk_files_len,
+                    count / blk_files_len
+                );
+
                 trace!("reading {:?}", path);
                 let mut blob = fs::read(&path)
                     .unwrap_or_else(|e| panic!("failed to read {:?}: {:?}", path, e));

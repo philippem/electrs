@@ -768,10 +768,16 @@ impl Daemon {
         let chunk_size = 100_000;
         let mut result = vec![];
         for heights in all_heights.chunks(chunk_size) {
-            trace!("downloading {} block headers", heights.len());
             let mut headers = self.getblockheaders(&heights)?;
             assert!(headers.len() == heights.len());
+
             result.append(&mut headers);
+
+            info!("downloaded {}/{} block headers ({:.0}%)",
+                result.len(),
+                tip_height,
+                result.len() as f32 / tip_height as f32 * 100.0);
+
         }
 
         let mut blockhash = *DEFAULT_BLOCKHASH;
@@ -792,7 +798,7 @@ impl Daemon {
     ) -> Result<Vec<BlockHeader>> {
         // Iterate back over headers until known blockash is found:
         if indexed_headers.is_empty() {
-            debug!("downloading all block headers up to {}", bestblockhash);
+            info!("downloading all block headers up to {}", bestblockhash);
             return self.get_all_headers(bestblockhash);
         }
         debug!(
