@@ -8,7 +8,7 @@ use electrs::{
 fn main() {
     let config = Config::from_args();
     let metrics = Metrics::new(config.monitoring_addr);
-    let store = Store::open(&config.db_path.join("newindex"), &config, &metrics);
+    let store = Store::open(&config, &metrics, true);
 
     let mut iter = store.history_db().raw_iterator();
     iter.seek(b"H");
