@@ -2,6 +2,9 @@ use bitcoind::bitcoincore_rpc::RpcApi;
 use serde_json::Value;
 use std::collections::HashSet;
 
+#[cfg(not(feature = "liquid"))]
+use {bitcoin::Amount, serde_json::from_value};
+
 use electrs::chain::Txid;
 
 pub mod common;
@@ -206,6 +209,219 @@ fn test_rest() -> Result<()> {
     let empty_package_resp = empty_package_result.unwrap_err().into_response().unwrap();
     let status = empty_package_resp.status();
     assert_eq!(status, 400);
+
+    // Reorg handling tests
+    #[cfg(not(feature = "liquid"))]
+    {
+        let get_conf_height = |txid| -> Result<Option<u64>> {
+            Ok(get_json(&format!("/tx/{}/status", txid))?["block_height"].as_u64())
+        };
+        let get_chain_stats = |addr| -> Result<Value> {
+            Ok(get_json(&format!("/address/{}", addr))?["chain_stats"].take())
+        };
+        let get_chain_txs = |addr| -> Result<Vec<Value>> {
+            Ok(from_value(get_json(&format!(
+                "/address/{}/txs/chain",
+                addr
+            ))?)?)
+        };
+        let get_outspend = |outpoint: &bitcoin::OutPoint| -> Result<Value> {
+            get_json(&format!("/tx/{}/outspend/{}", outpoint.txid, outpoint.vout))
+        };
+
+        let init_height = tester.node_client().get_block_count()?;
+
+        let address = tester.newaddress()?;
+        let miner_address = tester.newaddress()?;
+
+        let txid_a = tester.send(&address, Amount::from_sat(100000))?;
+        let txid_b = tester.send(&address, Amount::from_sat(200000))?;
+        let txid_c = tester.send(&address, Amount::from_sat(500000))?;
+
+        let tx_a = tester.get_raw_transaction(&txid_a, None)?;
+        let tx_b = tester.get_raw_transaction(&txid_b, None)?;
+        let tx_c = tester.get_raw_transaction(&txid_c, None)?;
+
+        // Confirm tx_a, tx_b and tx_c
+        let blockhash_1 = tester.mine()?;
+
+        assert_eq!(
+            get_plain("/blocks/tip/height")?,
+            (init_height + 1).to_string()
+        );
+        assert_eq!(get_plain("/blocks/tip/hash")?, blockhash_1.to_string());
+        assert_eq!(get_conf_height(&txid_a)?, Some(init_height + 1));
+        assert_eq!(get_conf_height(&txid_b)?, Some(init_height + 1));
+        assert_eq!(get_conf_height(&txid_c)?, Some(init_height + 1));
+        assert_eq!(
+            get_chain_stats(&address)?["funded_txo_sum"].as_u64(),
+            Some(800000)
+        );
+        assert_eq!(get_chain_txs(&address)?.len(), 3);
+
+        let c_outspend = get_outspend(&tx_c.input[0].previous_output)?;
+        assert_eq!(
+            c_outspend["txid"].as_str(),
+            Some(txid_c.to_string().as_str())
+        );
+        assert_eq!(
+            c_outspend["status"]["block_height"].as_u64(),
+            Some(init_height + 1)
+        );
+
+        // Reorg the last block, re-confirm tx_a at the same height
+        tester.invalidate_block(&blockhash_1)?;
+        tester.call::<Value>(
+            "generateblock",
+            &[
+                miner_address.to_string().into(),
+                [txid_a.to_string()].into(),
+            ],
+        )?;
+        // Re-confirm tx_b at a different height
+        tester.call::<Value>(
+            "generateblock",
+            &[
+                miner_address.to_string().into(),
+                [txid_b.to_string()].into(),
+            ],
+        )?;
+        // Don't re-confirm tx_c at all
+
+        let blockhash_2 = tester.get_best_block_hash()?;
+
+        tester.sync()?;
+
+        assert_eq!(
+            get_plain("/blocks/tip/height")?,
+            (init_height + 2).to_string()
+        );
+        assert_eq!(get_plain("/blocks/tip/hash")?, blockhash_2.to_string());
+
+        // Test address stats (GET /address/:address)
+        assert_eq!(
+            get_chain_stats(&address)?["funded_txo_sum"].as_u64(),
+            Some(300000)
+        );
+
+        // Test address history (GET /address/:address/txs/chain)
+        let addr_txs = get_chain_txs(&address)?;
+        assert_eq!(addr_txs.len(), 2);
+        assert_eq!(
+            addr_txs[0]["txid"].as_str(),
+            Some(txid_b.to_string().as_str())
+        );
+        assert_eq!(
+            addr_txs[0]["status"]["block_height"].as_u64(),
+            Some(init_height + 2)
+        );
+        assert_eq!(
+            addr_txs[1]["txid"].as_str(),
+            Some(txid_a.to_string().as_str())
+        );
+        assert_eq!(
+            addr_txs[1]["status"]["block_height"].as_u64(),
+            Some(init_height + 1)
+        );
+
+        // Test transaction status lookup (GET /tx/:txid/status)
+        assert_eq!(get_conf_height(&txid_a)?, Some(init_height + 1));
+        assert_eq!(get_conf_height(&txid_b)?, Some(init_height + 2));
+        assert_eq!(get_conf_height(&txid_c)?, None);
+
+        // Test spend edge lookup (GET /tx/:txid/outspend/:vout)
+        let a_spends = get_outspend(&tx_a.input[0].previous_output)?;
+        assert_eq!(a_spends["txid"].as_str(), Some(txid_a.to_string().as_str()));
+        assert_eq!(
+            a_spends["status"]["block_height"].as_u64(),
+            Some(init_height + 1)
+        );
+        let b_spends = get_outspend(&tx_b.input[0].previous_output)?;
+        assert_eq!(b_spends["txid"].as_str(), Some(txid_b.to_string().as_str()));
+        assert_eq!(
+            b_spends["status"]["block_height"].as_u64(),
+            Some(init_height + 2)
+        );
+        let c_spends = get_outspend(&tx_c.input[0].previous_output)?;
+        assert_eq!(c_spends["status"]["confirmed"].as_bool(), Some(false));
+
+        // Test a deeper reorg, all the way back to exclude tx_b
+        tester.generate_to_address(15, &address)?;
+        tester.sync()?;
+        tester.invalidate_block(&blockhash_2)?;
+
+        for _ in 0..20 {
+            // Mine some empty blocks, intentionally without tx_b
+            tester.call::<Value>(
+                "generateblock",
+                &[miner_address.to_string().into(), Vec::<Value>::new().into()],
+            )?;
+        }
+        tester.sync()?;
+
+        assert_eq!(
+            get_plain("/blocks/tip/height")?,
+            (init_height + 21).to_string()
+        );
+        assert_eq!(
+            get_plain("/blocks/tip/hash")?,
+            tester.get_best_block_hash()?.to_string()
+        );
+
+        assert_eq!(
+            get_chain_stats(&address)?["funded_txo_sum"].as_u64(),
+            Some(100000)
+        );
+
+        let addr_txs = get_chain_txs(&address)?;
+        assert_eq!(addr_txs.len(), 1);
+        assert_eq!(
+            addr_txs[0]["txid"].as_str(),
+            Some(txid_a.to_string().as_str())
+        );
+        assert_eq!(
+            addr_txs[0]["status"]["block_height"].as_u64(),
+            Some(init_height + 1)
+        );
+
+        assert_eq!(get_conf_height(&txid_a)?, Some(init_height + 1));
+        assert_eq!(get_conf_height(&txid_b)?, None);
+        assert_eq!(get_conf_height(&txid_c)?, None);
+
+        let a_spends = get_outspend(&tx_a.input[0].previous_output)?;
+        assert_eq!(
+            a_spends["status"]["block_height"].as_u64(),
+            Some(init_height + 1)
+        );
+        let b_spends = get_outspend(&tx_b.input[0].previous_output)?;
+        assert_eq!(b_spends["spent"].as_bool(), Some(false));
+        let c_spends = get_outspend(&tx_b.input[0].previous_output)?;
+        assert_eq!(c_spends["spent"].as_bool(), Some(false));
+
+        // Reorg everything back to genesis
+        tester.invalidate_block(&tester.get_block_hash(1)?)?;
+        tester.call::<Value>(
+            "generateblock",
+            &[miner_address.to_string().into(), Vec::<Value>::new().into()],
+        )?;
+        tester.sync()?;
+
+        assert_eq!(get_plain("/blocks/tip/height")?, 1.to_string());
+        assert_eq!(
+            get_chain_stats(&address)?["funded_txo_sum"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(get_chain_txs(&address)?.len(), 0);
+        assert_eq!(get_conf_height(&txid_a)?, None);
+        assert_eq!(get_conf_height(&txid_b)?, None);
+        assert_eq!(get_conf_height(&txid_c)?, None);
+        let a_spends = get_outspend(&tx_a.input[0].previous_output)?;
+        assert_eq!(a_spends["spent"].as_bool(), Some(false));
+
+        // Mine some blocks so that the followup tests have some coins to play with
+        tester.generate_to_address(101, &miner_address)?;
+        tester.sync()?;
+    }
 
     // bitcoin 28.0 only tests - submitpackage
     #[cfg(all(not(feature = "liquid"), feature = "bitcoind_28_0"))]

@@ -276,6 +276,18 @@ impl TestRunner {
     }
 }
 
+// Make the RpcApi methods available directly on TestRunner,
+// without having to go through the node_client() getter
+impl bitcoincore_rpc::RpcApi for TestRunner {
+    fn call<T: for<'a> serde::de::Deserialize<'a>>(
+        &self,
+        cmd: &str,
+        args: &[serde_json::Value],
+    ) -> bitcoincore_rpc::Result<T> {
+        self.node_client().call(cmd, args)
+    }
+}
+
 pub fn init_rest_tester() -> Result<(rest::Handle, net::SocketAddr, TestRunner)> {
     let tester = TestRunner::new()?;
     let rest_server = rest::start(Arc::clone(&tester.config), Arc::clone(&tester.query));
