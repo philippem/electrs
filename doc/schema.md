@@ -27,11 +27,9 @@ Each block results in the following new rows:
 
  * `"D{blockhash}" → ""` (signifies the block was added)
 
-Each transaction results in the following new rows:
+Each transaction results in the following new row:
 
  * `"T{txid}" → "{serialized-transaction}"`
-
- * `"C{txid}{confirmed-blockhash}" → ""` (a list of blockhashes where `txid` was seen to be confirmed)
 
 Each output results in the following new rows:
 
@@ -43,6 +41,10 @@ When the indexer is synced up to the tip of the chain, the hash of the tip is sa
  * `"t" →  "{blockhash}"`
 
 ### `history`
+
+Each transaction results in the following new row:
+
+ * `"C{txid}" → "{confirmed-height}"`
 
 Each funding output (except for provably unspendable ones when `--index-unspendables` is not enabled) results in the following new row (`H` is for history, `F` is for funding):
 

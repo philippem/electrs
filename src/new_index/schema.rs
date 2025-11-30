@@ -18,6 +18,7 @@ use elements::{
 };
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::convert::TryInto;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -421,7 +422,7 @@ impl Indexer {
     }
 
     // Undo the history db entries previously written for the given blocks (that were reorged).
-    // This includes the TxHistory, TxEdge and BlockDone rows ('H', 'S' and 'D'),
+    // This includes the TxHistory, TxEdge, TxConf and BlockDone rows ('H', 'S', 'C' and 'D'),
     // as well as the Elements history rows ('I' and 'i').
     //
     // This does *not* remove any txstore db entries, which are intentionally kept
@@ -1008,18 +1009,11 @@ impl ChainQuery {
 
     pub fn tx_confirming_block(&self, txid: &Txid) -> Option<BlockId> {
         let _timer = self.start_timer("tx_confirming_block");
+        let row_value = self.store.history_db.get(&TxConfRow::key(txid))?;
+        let height = TxConfRow::height_from_val(&row_value);
         let headers = self.store.indexed_headers.read().unwrap();
-        self.store
-            .txstore_db
-            .iter_scan(&TxConfRow::filter(&txid[..]))
-            .map(TxConfRow::from_row)
-            // header_by_blockhash only returns blocks that are part of the best chain,
-            // or None for orphaned blocks.
-            .filter_map(|conf| {
-                headers.header_by_blockhash(&deserialize(&conf.key.blockhash).unwrap())
-            })
-            .next()
-            .map(BlockId::from)
+        // skip entries that point to non-existing heights (may happen during reorg handling)
+        Some(headers.header_by_height(height as usize)?.into())
     }
 
     pub fn get_block_status(&self, hash: &BlockHash) -> BlockStatus {
@@ -1093,7 +1087,6 @@ fn load_blockheaders(db: &DB) -> HashMap<BlockHash, BlockHeader> {
 fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRow> {
     // persist individual transactions:
     //      T{txid} → {rawtx}
-    //      C{txid}{blockhash}{height} →
     //      O{txid}{index} → {txout}
     // persist block headers', block txids' and metadata rows:
     //      B{blockhash} → {header}
@@ -1106,7 +1099,7 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
             let blockhash = full_hash(&b.entry.hash()[..]);
             let txids: Vec<Txid> = b.block.txdata.iter().map(|tx| tx.compute_txid()).collect();
             for (tx, txid) in b.block.txdata.iter().zip(txids.iter()) {
-                add_transaction(*txid, tx, blockhash, &mut rows, iconfig);
+                add_transaction(*txid, tx, &mut rows, iconfig);
             }
 
             if !iconfig.light_mode {
@@ -1122,15 +1115,7 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
         .collect()
 }
 
-fn add_transaction(
-    txid: Txid,
-    tx: &Transaction,
-    blockhash: FullHash,
-    rows: &mut Vec<DBRow>,
-    iconfig: &IndexerConfig,
-) {
-    rows.push(TxConfRow::new(txid, blockhash).into_row());
-
+fn add_transaction(txid: Txid, tx: &Transaction, rows: &mut Vec<DBRow>, iconfig: &IndexerConfig) {
     if !iconfig.light_mode {
         rows.push(TxRow::new(txid, tx).into_row());
     }
@@ -1211,12 +1196,17 @@ fn index_transaction(
     rows: &mut Vec<DBRow>,
     iconfig: &IndexerConfig,
 ) {
+    let txid = full_hash(&tx.compute_txid()[..]);
+
+    // persist tx confirmation row:
+    //      C{txid} → "{block_height}"
+    rows.push(TxConfRow::new(txid, confirmed_height).into_row());
+
     // persist history index:
     //      H{funding-scripthash}{funding-height}F{funding-txid:vout} → ""
     //      H{funding-scripthash}{spending-height}S{spending-txid:vin}{funding-txid:vout} → ""
     // persist "edges" for fast is-this-TXO-spent check
     //      S{funding-txid:vout}{spending-txid:vin} → ""
-    let txid = full_hash(&tx.compute_txid()[..]);
     for (txo_index, txo) in tx.output.iter().enumerate() {
         if is_spendable(txo) || iconfig.index_unspendables {
             let history = TxHistoryRow::new(
@@ -1335,40 +1325,39 @@ impl TxRow {
 struct TxConfKey {
     code: u8,
     txid: FullHash,
-    blockhash: FullHash,
 }
 
 struct TxConfRow {
     key: TxConfKey,
+    value: u32, // the confirmation height
 }
 
 impl TxConfRow {
-    fn new(txid: Txid, blockhash: FullHash) -> TxConfRow {
+    fn new(txid: FullHash, height: u32) -> TxConfRow {
         let txid = full_hash(&txid[..]);
         TxConfRow {
-            key: TxConfKey {
-                code: b'C',
-                txid,
-                blockhash,
-            },
+            key: TxConfKey { code: b'C', txid },
+            value: height,
         }
     }
 
-    fn filter(prefix: &[u8]) -> Bytes {
-        [b"C", prefix].concat()
+    fn key(txid: &Txid) -> Bytes {
+        bincode::serialize_little(&TxConfKey {
+            code: b'C',
+            txid: full_hash(&txid[..]),
+        })
+        .unwrap()
     }
 
     fn into_row(self) -> DBRow {
         DBRow {
             key: bincode::serialize_little(&self.key).unwrap(),
-            value: vec![],
+            value: self.value.to_le_bytes().to_vec(),
         }
     }
 
-    fn from_row(row: DBRow) -> Self {
-        TxConfRow {
-            key: bincode::deserialize_little(&row.key).expect("failed to parse TxConfKey"),
-        }
+    fn height_from_val(val: &[u8]) -> u32 {
+        u32::from_le_bytes(val.try_into().expect("invalid TxConf value"))
     }
 }
 
