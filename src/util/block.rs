@@ -128,12 +128,17 @@ impl HeaderList {
         );
 
         let mut headers = HeaderList::empty();
-        headers.apply(headers.order(headers_chain));
+        headers.append(headers.preprocess(headers_chain).0);
         headers
     }
 
+    /// Pre-process the given `BlockHeader`s to verify they connect to the chain and to
+    /// transform them into `HeaderEntry`s with heights and hashes - but without saving them.
+    /// If the headers trigger a reorg, the `reorged_since` height is returned too.
+    /// Actually applying the headers requires to first pop() the reorged blocks (if any),
+    /// then append() the new ones.
     #[trace]
-    pub fn order(&self, new_headers: Vec<BlockHeader>) -> Vec<HeaderEntry> {
+    pub fn preprocess(&self, new_headers: Vec<BlockHeader>) -> (Vec<HeaderEntry>, Option<usize>) {
         // header[i] -> header[i-1] (i.e. header.last() is the tip)
         struct HashedHeader {
             blockhash: BlockHash,
@@ -152,7 +157,7 @@ impl HeaderList {
         }
         let prev_blockhash = match hashed_headers.first() {
             Some(h) => h.header.prev_blockhash,
-            None => return vec![], // hashed_headers is empty
+            None => return (vec![], None), // hashed_headers is empty
         };
         let new_height: usize = if prev_blockhash == *DEFAULT_BLOCKHASH {
             0
@@ -162,18 +167,38 @@ impl HeaderList {
                 .height()
                 + 1
         };
-        (new_height..)
+        let header_entries = (new_height..)
             .zip(hashed_headers.into_iter())
             .map(|(height, hashed_header)| HeaderEntry {
                 height,
                 hash: hashed_header.blockhash,
                 header: hashed_header.header,
             })
-            .collect()
+            .collect();
+        let reorged_since = (new_height < self.len()).then_some(new_height);
+        (header_entries, reorged_since)
     }
 
+    /// Pop off reorged blocks since (including) the given height and return them.
     #[trace]
-    pub fn apply(&mut self, new_headers: Vec<HeaderEntry>) {
+    pub fn pop(&mut self, since_height: usize) -> Vec<HeaderEntry> {
+        let reorged_headers = self.headers.split_off(since_height);
+
+        for header in &reorged_headers {
+            self.heights.remove(header.hash());
+        }
+        self.tip = self
+            .headers
+            .last()
+            .map(|h| *h.hash())
+            .unwrap_or_else(|| *DEFAULT_BLOCKHASH);
+
+        reorged_headers
+    }
+
+    /// Append new headers. Expected to always extend the tip (stale blocks must be removed first)
+    #[trace]
+    pub fn append(&mut self, new_headers: Vec<HeaderEntry>) {
         // new_headers[i] -> new_headers[i - 1] (i.e. new_headers.last() is the tip)
         for i in 1..new_headers.len() {
             assert_eq!(new_headers[i - 1].height() + 1, new_headers[i].height());
@@ -200,7 +225,7 @@ impl HeaderList {
             new_headers.len(),
             new_height
         );
-        let _removed = self.headers.split_off(new_height); // keep [0..new_height) entries
+        assert_eq!(new_height, self.headers.len());
         for new_header in new_headers {
             let height = new_header.height();
             assert_eq!(height, self.headers.len());
@@ -214,11 +239,8 @@ impl HeaderList {
     pub fn header_by_blockhash(&self, blockhash: &BlockHash) -> Option<&HeaderEntry> {
         let height = self.heights.get(blockhash)?;
         let header = self.headers.get(*height)?;
-        if *blockhash == *header.hash() {
-            Some(header)
-        } else {
-            None
-        }
+        assert_eq!(header.hash(), blockhash);
+        Some(header)
     }
 
     #[trace]

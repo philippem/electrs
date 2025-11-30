@@ -170,7 +170,7 @@ impl DB {
         }
     }
 
-    pub fn write(&self, mut rows: Vec<DBRow>, flush: DBFlush) {
+    pub fn write_rows(&self, mut rows: Vec<DBRow>, flush: DBFlush) {
         log::trace!(
             "writing {} rows to {:?}, flush={:?}",
             rows.len(),
@@ -182,6 +182,20 @@ impl DB {
         for row in rows {
             batch.put(&row.key, &row.value);
         }
+        self.write_batch(batch, flush)
+    }
+
+    pub fn delete_rows(&self, mut rows: Vec<DBRow>, flush: DBFlush) {
+        log::trace!("deleting {} rows from {:?}", rows.len(), self.db,);
+        rows.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        let mut batch = rocksdb::WriteBatch::default();
+        for row in rows {
+            batch.delete(&row.key);
+        }
+        self.write_batch(batch, flush)
+    }
+
+    fn write_batch(&self, batch: rocksdb::WriteBatch, flush: DBFlush) {
         let do_flush = match flush {
             DBFlush::Enable => true,
             DBFlush::Disable => false,
