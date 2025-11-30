@@ -38,8 +38,8 @@ impl<'a> Iterator for ScanIterator<'a> {
             return None;
         }
         Some(DBRow {
-            key: key.to_vec(),
-            value: value.to_vec(),
+            key: key.into_vec(),
+            value: value.into_vec(),
         })
     }
 }
