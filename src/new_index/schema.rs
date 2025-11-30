@@ -600,13 +600,15 @@ impl ChainQuery {
         limit: usize,
     ) -> Vec<(Transaction, BlockId)> {
         let _timer_scan = self.start_timer("history");
+        let headers = self.store.indexed_headers.read().unwrap();
         let txs_conf = self
             .history_iter_scan_reverse(code, hash)
-            .map(|row| TxHistoryRow::from_row(row).get_txid())
+            .map(TxHistoryRow::from_row)
+            .map(|row| (row.get_txid(), row.key.confirmed_height as usize))
             // XXX: unique() requires keeping an in-memory list of all txids, can we avoid that?
             .unique()
             // TODO seek directly to last seen tx without reading earlier rows
-            .skip_while(|txid| {
+            .skip_while(|(txid, _)| {
                 // skip until we reach the last_seen_txid
                 last_seen_txid.map_or(false, |last_seen_txid| last_seen_txid != txid)
             })
@@ -614,9 +616,11 @@ impl ChainQuery {
                 Some(_) => 1, // skip the last_seen_txid itself
                 None => 0,
             })
-            .filter_map(|txid| self.tx_confirming_block(&txid).map(|b| (txid, b)))
+            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?.into())))
             .take(limit)
             .collect::<Vec<(Txid, BlockId)>>();
+        drop(headers);
 
         self.lookup_txns(&txs_conf)
             .expect("failed looking up txs in history index")
@@ -633,10 +637,13 @@ impl ChainQuery {
 
     fn _history_txids(&self, code: u8, hash: &[u8], limit: usize) -> Vec<(Txid, BlockId)> {
         let _timer = self.start_timer("history_txids");
+        let headers = self.store.indexed_headers.read().unwrap();
         self.history_iter_scan(code, hash, 0)
-            .map(|row| TxHistoryRow::from_row(row).get_txid())
+            .map(TxHistoryRow::from_row)
+            .map(|row| (row.get_txid(), row.key.confirmed_height as usize))
             .unique()
-            .filter_map(|txid| self.tx_confirming_block(&txid).map(|b| (txid, b)))
+            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?.into())))
             .take(limit)
             .collect()
     }
@@ -710,12 +717,14 @@ impl ChainQuery {
         limit: usize,
     ) -> Result<(UtxoMap, Option<BlockHash>, usize)> {
         let _timer = self.start_timer("utxo_delta");
+        let headers = self.store.indexed_headers.read().unwrap();
         let history_iter = self
             .history_iter_scan(b'H', scripthash, start_height)
             .map(TxHistoryRow::from_row)
+            // skip over entries that point to non-existing heights (may happen during reorg handling)
             .filter_map(|history| {
-                self.tx_confirming_block(&history.get_txid())
-                    .map(|b| (history, b))
+                let header = headers.header_by_height(history.key.confirmed_height as usize)?;
+                Some((history, BlockId::from(header)))
             });
 
         let mut utxos = init_utxos;
@@ -788,15 +797,14 @@ impl ChainQuery {
         start_height: usize,
     ) -> (ScriptStats, Option<BlockHash>) {
         let _timer = self.start_timer("stats_delta"); // TODO: measure also the number of txns processed.
+        let headers = self.store.indexed_headers.read().unwrap();
         let history_iter = self
             .history_iter_scan(b'H', scripthash, start_height)
             .map(TxHistoryRow::from_row)
+            // skip over entries that point to non-existing heights (may happen during reorg handling)
             .filter_map(|history| {
-                self.tx_confirming_block(&history.get_txid())
-                    // drop history entries that were previously confirmed in a re-orged block and later
-                    // confirmed again at a different height
-                    .filter(|blockid| blockid.height == history.key.confirmed_height as usize)
-                    .map(|blockid| (history, blockid))
+                let header = headers.header_by_height(history.key.confirmed_height as usize)?;
+                Some((history, BlockId::from(header)))
             });
 
         let mut stats = init_stats;
