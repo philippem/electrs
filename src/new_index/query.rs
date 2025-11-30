@@ -1,5 +1,3 @@
-use rayon::prelude::*;
-
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
@@ -153,18 +151,29 @@ impl Query {
     }
 
     #[trace]
-    pub fn lookup_tx_spends(&self, tx: Transaction) -> Vec<Option<SpendingInput>> {
+    pub fn lookup_tx_spends(&self, tx: &Transaction) -> Vec<Option<SpendingInput>> {
         let txid = tx.compute_txid();
+        let outpoints = tx
+            .output
+            .iter()
+            .enumerate()
+            .filter(|(_, txout)| is_spendable(txout))
+            .map(|(vout, _)| OutPoint::new(txid, vout as u32))
+            .collect::<BTreeSet<_>>();
 
+        // First fetch all confirmed spends using a MultiGet operation,
+        // then fall back to the mempool for any outpoints not spent on-chain
+        let mut chain_spends = self.chain.lookup_spends(outpoints);
+        let mempool = self.mempool();
         tx.output
-            .par_iter()
+            .iter()
             .enumerate()
             .map(|(vout, txout)| {
                 if is_spendable(txout) {
-                    self.lookup_spend(&OutPoint {
-                        txid,
-                        vout: vout as u32,
-                    })
+                    let outpoint = OutPoint::new(txid, vout as u32);
+                    chain_spends
+                        .remove(&outpoint)
+                        .or_else(|| mempool.lookup_spend(&outpoint))
                 } else {
                     None
                 }
