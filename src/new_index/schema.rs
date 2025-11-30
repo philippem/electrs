@@ -770,7 +770,7 @@ impl ChainQuery {
     pub fn address_search(&self, prefix: &str, limit: usize) -> Vec<String> {
         let _timer_scan = self.start_timer("address_search");
         self.store
-            .history_db
+            .txstore_db
             .iter_scan(&addr_search_filter(prefix))
             .take(limit)
             .map(|row| std::str::from_utf8(&row.key[1..]).unwrap().to_string())
@@ -1050,6 +1050,12 @@ fn add_transaction(
         if is_spendable(txo) {
             rows.push(TxOutRow::new(&txid, txo_index, txo).into_row());
         }
+
+        if iconfig.address_search {
+            if let Some(row) = addr_search_row(&txo.script_pubkey, iconfig.network) {
+                rows.push(row);
+            }
+        }
     }
 }
 
@@ -1133,12 +1139,6 @@ fn index_transaction(
                 }),
             );
             rows.push(history.into_row());
-
-            if iconfig.address_search {
-                if let Some(row) = addr_search_row(&txo.script_pubkey, iconfig.network) {
-                    rows.push(row);
-                }
-            }
         }
     }
     for (txi_index, txi) in tx.input.iter().enumerate() {
