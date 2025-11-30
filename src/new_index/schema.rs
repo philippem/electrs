@@ -1042,6 +1042,10 @@ impl ChainQuery {
         Some(headers.header_by_height(height as usize)?.into())
     }
 
+    pub fn lookup_confirmations(&self, txids: BTreeSet<Txid>) -> HashMap<Txid, u32> {
+        lookup_confirmations(&self.store.history_db, txids)
+    }
+
     pub fn get_block_status(&self, hash: &BlockHash) -> BlockStatus {
         // TODO differentiate orphaned and non-existing blocks? telling them apart requires
         // an additional db read.
@@ -1192,6 +1196,18 @@ fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
     txstore_db
         .get(&TxOutRow::key(&outpoint))
         .map(|val| deserialize(&val).expect("failed to parse TxOut"))
+}
+
+pub fn lookup_confirmations(history_db: &DB, txids: BTreeSet<Txid>) -> HashMap<Txid, u32> {
+    history_db
+        .multi_get(txids.iter().map(TxConfRow::key))
+        .into_iter()
+        .zip(txids)
+        .filter_map(|(res, txid)| {
+            let confirmation_height = u32::from_le_bytes(res.unwrap()?.try_into().unwrap());
+            Some((txid, confirmation_height))
+        })
+        .collect()
 }
 
 fn index_blocks(
