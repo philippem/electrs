@@ -300,7 +300,7 @@ impl Indexer {
             // (even before the rows are deleted below), since they reference block heights that will no longer exist.
             // This ensures consistency - it is not possible for blocks to be available (e.g. in GET /blocks/tip or /block/:hash)
             // without the corresponding history entries for these blocks (e.g. in GET /address/:address/txs), or vice-versa.
-            let reorged_headers = self
+            let mut reorged_headers = self
                 .store
                 .indexed_headers
                 .write()
@@ -314,6 +314,12 @@ impl Indexer {
                 reorged_headers.len(),
                 reorged_since,
             );
+
+            // Reorged blocks are undone in chunks of 100, processed in serial, each as an atomic batch.
+            // Reverse them so that chunks closest to the chain tip are processed first,
+            // which is necessary to properly recover from crashes during reorg handling.
+            // Also see the comment under `Store::open()`.
+            reorged_headers.reverse();
 
             // Fetch the reorged blocks, then undo their history index db rows.
             // The txstore db rows are kept for reorged blocks/transactions.
