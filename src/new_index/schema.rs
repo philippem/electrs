@@ -1004,6 +1004,30 @@ impl ChainQuery {
         })
     }
 
+    pub fn lookup_spends(&self, outpoints: BTreeSet<OutPoint>) -> HashMap<OutPoint, SpendingInput> {
+        let _timer = self.start_timer("lookup_spends");
+        let headers = self.store.indexed_headers.read().unwrap();
+        self.store
+            .history_db
+            .multi_get(outpoints.iter().map(TxEdgeRow::key))
+            .into_iter()
+            .zip(outpoints)
+            .filter_map(|(edge_val, outpoint)| {
+                let edge = TxEdgeValue::from_bytes(&edge_val.unwrap()?);
+                // skip over entries that point to non-existing heights (may happen during reorg handling)
+                let header = headers.header_by_height(edge.spending_height as usize)?;
+                Some((
+                    outpoint,
+                    SpendingInput {
+                        txid: deserialize(&edge.spending_txid).expect("failed to parse Txid"),
+                        vin: edge.spending_vin as u32,
+                        confirmed: Some(header.into()),
+                    },
+                ))
+            })
+            .collect()
+    }
+
     pub fn tx_confirming_block(&self, txid: &Txid) -> Option<BlockId> {
         let _timer = self.start_timer("tx_confirming_block");
         let row_value = self.store.history_db.get(&TxConfRow::key(txid))?;

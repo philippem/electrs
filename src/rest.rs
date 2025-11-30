@@ -996,7 +996,7 @@ fn handle_request(
                 .lookup_txn(&hash)
                 .ok_or_else(|| HttpError::not_found("Transaction not found".to_string()))?;
             let spends: Vec<SpendingValue> = query
-                .lookup_tx_spends(tx)
+                .lookup_tx_spends(&tx)
                 .into_iter()
                 .map(|spend| spend.map_or_else(SpendingValue::default, SpendingValue::from))
                 .collect();
