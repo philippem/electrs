@@ -513,6 +513,28 @@ impl ChainQuery {
         }
     }
 
+    pub fn get_block_txs(
+        &self,
+        hash: &BlockHash,
+        start_index: usize,
+        limit: usize,
+    ) -> Result<Vec<Transaction>> {
+        let txids = self.get_block_txids(hash).chain_err(|| "block not found")?;
+        ensure!(start_index < txids.len(), "start index out of range");
+
+        let txids_with_blockhash = txids
+            .into_iter()
+            .skip(start_index)
+            .take(limit)
+            .map(|txid| (txid, *hash))
+            .collect::<Vec<_>>();
+
+        self.lookup_txns(&txids_with_blockhash)
+
+        // XXX use getblock in lightmode? a single RPC call, but would fetch all txs to get one page
+        // self.daemon.getblock(hash)?.txdata.into_iter().skip(start_index).take(limit).collect()
+    }
+
     pub fn get_block_meta(&self, hash: &BlockHash) -> Option<BlockMeta> {
         let _timer = self.start_timer("get_block_meta");
 
@@ -538,17 +560,19 @@ impl ChainQuery {
             let entry = self.header_by_hash(hash)?;
             let meta = self.get_block_meta(hash)?;
             let txids = self.get_block_txids(hash)?;
+            let txids_with_blockhash: Vec<_> =
+                txids.into_iter().map(|txid| (txid, *hash)).collect();
+            let raw_txs = self.lookup_raw_txns(&txids_with_blockhash).ok()?; // TODO avoid hiding all errors as None, return a Result
 
             // Reconstruct the raw block using the header and txids,
             // as <raw header><tx count varint><raw txs>
             let mut raw = Vec::with_capacity(meta.size as usize);
 
             raw.append(&mut serialize(entry.header()));
-            raw.append(&mut serialize(&VarInt(txids.len() as u64)));
+            raw.append(&mut serialize(&VarInt(raw_txs.len() as u64)));
 
-            for txid in txids {
-                // we don't need to provide the blockhash because we know we're not in light mode
-                raw.append(&mut self.lookup_raw_txn(&txid, None)?);
+            for mut raw_tx in raw_txs {
+                raw.append(&mut raw_tx);
             }
 
             Some(raw)
@@ -613,7 +637,7 @@ impl ChainQuery {
     ) -> Vec<(Transaction, BlockId)> {
         let _timer_scan = self.start_timer("history");
         let headers = self.store.indexed_headers.read().unwrap();
-        let txs_conf = self
+        let history_iter = self
             .history_iter_scan_reverse(code, hash)
             .map(TxHistoryRow::from_row)
             .map(|row| (row.get_txid(), row.key.confirmed_height as usize))
@@ -629,16 +653,22 @@ impl ChainQuery {
                 None => 0,
             })
             // skip over entries that point to non-existing heights (may happen during reorg handling)
-            .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?.into())))
-            .take(limit)
-            .collect::<Vec<(Txid, BlockId)>>();
+            .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?)))
+            .take(limit);
+
+        let mut txids_with_blockhash = Vec::with_capacity(limit);
+        let mut blockids = Vec::with_capacity(limit);
+        for (txid, header) in history_iter {
+            txids_with_blockhash.push((txid, *header.hash()));
+            blockids.push(BlockId::from(header));
+        }
         drop(headers);
 
-        self.lookup_txns(&txs_conf)
+        self.lookup_txns(&txids_with_blockhash)
             .expect("failed looking up txs in history index")
             .into_iter()
-            .zip(txs_conf)
-            .map(|(tx, (_, blockid))| (tx, blockid))
+            .zip(blockids)
+            .map(|(tx, blockid)| (tx, blockid))
             .collect()
     }
 
@@ -950,26 +980,40 @@ impl ChainQuery {
             .clone()
     }
 
-    // TODO: can we pass txids as a "generic iterable"?
-    // TODO: should also use a custom ThreadPoolBuilder?
-    pub fn lookup_txns(&self, txids: &[(Txid, BlockId)]) -> Result<Vec<Transaction>> {
+    pub fn lookup_txns(&self, txids: &[(Txid, BlockHash)]) -> Result<Vec<Transaction>> {
         let _timer = self.start_timer("lookup_txns");
-        txids
-            .par_iter()
-            .map(|(txid, blockid)| {
-                self.lookup_txn(txid, Some(&blockid.hash))
-                    .chain_err(|| "missing tx")
-            })
-            .collect::<Result<Vec<Transaction>>>()
+        Ok(self
+            .lookup_raw_txns(txids)?
+            .into_iter()
+            .map(|rawtx| deserialize(&rawtx).expect("failed to parse Transaction"))
+            .collect())
     }
 
     pub fn lookup_txn(&self, txid: &Txid, blockhash: Option<&BlockHash>) -> Option<Transaction> {
         let _timer = self.start_timer("lookup_txn");
-        self.lookup_raw_txn(txid, blockhash).map(|rawtx| {
-            let txn: Transaction = deserialize(&rawtx).expect("failed to parse Transaction");
-            assert_eq!(*txid, txn.compute_txid());
-            txn
-        })
+        let rawtx = self.lookup_raw_txn(txid, blockhash)?;
+        Some(deserialize(&rawtx).expect("failed to parse Transaction"))
+    }
+
+    pub fn lookup_raw_txns(&self, txids: &[(Txid, BlockHash)]) -> Result<Vec<Bytes>> {
+        let _timer = self.start_timer("lookup_raw_txns");
+        if self.light_mode {
+            txids
+                .par_iter()
+                .map(|(txid, blockhash)| {
+                    self.lookup_raw_txn(txid, Some(blockhash))
+                        .chain_err(|| "missing tx")
+                })
+                .collect()
+        } else {
+            let keys = txids.iter().map(|(txid, _)| TxRow::key(&txid[..]));
+            self.store
+                .txstore_db
+                .multi_get(keys)
+                .into_iter()
+                .map(|val| val.unwrap().chain_err(|| "missing tx"))
+                .collect()
+        }
     }
 
     pub fn lookup_raw_txn(&self, txid: &Txid, blockhash: Option<&BlockHash>) -> Option<Bytes> {

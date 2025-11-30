@@ -1,3 +1,4 @@
+use bitcoin::hex::FromHex;
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -16,6 +17,11 @@ use common::Result;
 fn test_rest() -> Result<()> {
     let (rest_handle, rest_addr, mut tester) = common::init_rest_tester().unwrap();
 
+    let get = |path: &str| {
+        ureq::get(&format!("http://{}{}", rest_addr, path))
+            .call()
+            .map(|r| r.into_body())
+    };
     let get_json = |path: &str| -> Result<Value> {
         Ok(ureq::get(&format!("http://{}{}", rest_addr, path))
             .call()?
@@ -140,6 +146,14 @@ fn test_rest() -> Result<()> {
     assert_eq!(res["id"].as_str(), Some(blockhash.to_string().as_str()));
     assert_eq!(res["height"].as_u64(), Some(tester.get_block_count()?));
     assert_eq!(res["tx_count"].as_u64(), Some(2));
+
+    // Test GET /block/:hash/raw
+    let mut res = get(&format!("/block/{}/raw", blockhash))?.into_reader();
+    let mut rest_rawblock = Vec::new();
+    res.read_to_end(&mut rest_rawblock).unwrap();
+    let node_hexblock = // uses low-level call() to support Elements
+        tester.call::<String>("getblock", &[blockhash.to_string().into(), 0.into()])?;
+    assert_eq!(rest_rawblock, Vec::from_hex(&node_hexblock).unwrap());
 
     // Test GET /block/:hash/txs
     let res = get_json(&format!("/block/{}/txs", blockhash))?;
