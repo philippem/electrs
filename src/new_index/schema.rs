@@ -993,18 +993,15 @@ impl ChainQuery {
 
     pub fn lookup_spend(&self, outpoint: &OutPoint) -> Option<SpendingInput> {
         let _timer = self.start_timer("lookup_spend");
-        self.store
-            .history_db
-            .iter_scan(&TxEdgeRow::filter(&outpoint))
-            .map(TxEdgeRow::from_row)
-            .find_map(|edge| {
-                let txid: Txid = deserialize(&edge.key.spending_txid).unwrap();
-                self.tx_confirming_block(&txid).map(|b| SpendingInput {
-                    txid,
-                    vin: edge.key.spending_vin as u32,
-                    confirmed: Some(b),
-                })
-            })
+        let edge = TxEdgeValue::from_bytes(&self.store.history_db.get(&TxEdgeRow::key(outpoint))?);
+        let headers = self.store.indexed_headers.read().unwrap();
+        // skip entries that point to non-existing heights (may happen during reorg handling)
+        let header = headers.header_by_height(edge.spending_height as usize)?;
+        Some(SpendingInput {
+            txid: deserialize(&edge.spending_txid).expect("failed to parse Txid"),
+            vin: edge.spending_vin as u32,
+            confirmed: Some(header.into()),
+        })
     }
 
     pub fn tx_confirming_block(&self, txid: &Txid) -> Option<BlockId> {
@@ -1247,6 +1244,7 @@ fn index_transaction(
             txi.previous_output.vout as u16,
             txid,
             txi_index as u16,
+            confirmed_height,
         );
         rows.push(edge.into_row());
     }
@@ -1604,12 +1602,18 @@ struct TxEdgeKey {
     code: u8,
     funding_txid: FullHash,
     funding_vout: u16,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TxEdgeValue {
     spending_txid: FullHash,
     spending_vin: u16,
+    spending_height: u32,
 }
 
 struct TxEdgeRow {
     key: TxEdgeKey,
+    value: TxEdgeValue,
 }
 
 impl TxEdgeRow {
@@ -1618,19 +1622,22 @@ impl TxEdgeRow {
         funding_vout: u16,
         spending_txid: FullHash,
         spending_vin: u16,
+        spending_height: u32,
     ) -> Self {
         let key = TxEdgeKey {
             code: b'S',
             funding_txid,
             funding_vout,
+        };
+        let value = TxEdgeValue {
             spending_txid,
             spending_vin,
+            spending_height,
         };
-        TxEdgeRow { key }
+        TxEdgeRow { key, value }
     }
 
-    fn filter(outpoint: &OutPoint) -> Bytes {
-        // TODO build key without using bincode? [ b"S", &outpoint.txid[..], outpoint.vout?? ].concat()
+    fn key(outpoint: &OutPoint) -> Bytes {
         bincode::serialize_little(&(b'S', full_hash(&outpoint.txid[..]), outpoint.vout as u16))
             .unwrap()
     }
@@ -1638,14 +1645,14 @@ impl TxEdgeRow {
     fn into_row(self) -> DBRow {
         DBRow {
             key: bincode::serialize_little(&self.key).unwrap(),
-            value: vec![],
+            value: bincode::serialize_little(&self.value).unwrap(),
         }
     }
+}
 
-    fn from_row(row: DBRow) -> Self {
-        TxEdgeRow {
-            key: bincode::deserialize_little(&row.key).expect("failed to deserialize TxEdgeKey"),
-        }
+impl TxEdgeValue {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        bincode::deserialize_little(bytes).expect("invalid TxEdgeValue")
     }
 }
 
