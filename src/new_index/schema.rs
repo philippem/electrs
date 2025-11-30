@@ -19,8 +19,7 @@ use elements::{
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use crate::{chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
@@ -59,16 +58,18 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open(path: &Path, config: &Config, metrics: &Metrics) -> Self {
-        let txstore_db = DB::open(&path.join("txstore"), config);
+    pub fn open(config: &Config, metrics: &Metrics, verify_compat: bool) -> Self {
+        let path = config.db_path.join("newindex");
+
+        let txstore_db = DB::open(&path.join("txstore"), config, verify_compat);
         let added_blockhashes = load_blockhashes(&txstore_db, &BlockRow::done_filter());
         debug!("{} blocks were added", added_blockhashes.len());
 
-        let history_db = DB::open(&path.join("history"), config);
+        let history_db = DB::open(&path.join("history"), config, verify_compat);
         let indexed_blockhashes = load_blockhashes(&history_db, &BlockRow::done_filter());
         debug!("{} blocks were indexed", indexed_blockhashes.len());
 
-        let cache_db = DB::open(&path.join("cache"), config);
+        let cache_db = DB::open(&path.join("cache"), config, verify_compat);
 
         let db_metrics = Arc::new(RocksDbMetrics::new(&metrics));
         txstore_db.start_stats_exporter(Arc::clone(&db_metrics), "txstore_db");
@@ -121,6 +122,10 @@ impl Store {
 
     pub fn cache_db(&self) -> &DB {
         &self.cache_db
+    }
+
+    pub fn headers(&self) -> RwLockReadGuard<HeaderList> {
+        self.indexed_headers.read().unwrap()
     }
 
     pub fn done_initial_sync(&self) -> bool {
@@ -1360,26 +1365,25 @@ impl TxRow {
 }
 
 #[derive(Serialize, Deserialize)]
-struct TxConfKey {
+pub struct TxConfKey {
     code: u8,
     txid: FullHash,
 }
 
-struct TxConfRow {
+pub struct TxConfRow {
     key: TxConfKey,
     value: u32, // the confirmation height
 }
 
 impl TxConfRow {
-    fn new(txid: FullHash, height: u32) -> TxConfRow {
-        let txid = full_hash(&txid[..]);
+    pub fn new(txid: FullHash, height: u32) -> TxConfRow {
         TxConfRow {
             key: TxConfKey { code: b'C', txid },
             value: height,
         }
     }
 
-    fn key(txid: &Txid) -> Bytes {
+    pub fn key(txid: &Txid) -> Bytes {
         bincode::serialize_little(&TxConfKey {
             code: b'C',
             txid: full_hash(&txid[..]),
@@ -1387,7 +1391,7 @@ impl TxConfRow {
         .unwrap()
     }
 
-    fn into_row(self) -> DBRow {
+    pub fn into_row(self) -> DBRow {
         DBRow {
             key: bincode::serialize_little(&self.key).unwrap(),
             value: self.value.to_le_bytes().to_vec(),
@@ -1638,26 +1642,26 @@ impl TxHistoryInfo {
 }
 
 #[derive(Serialize, Deserialize)]
-struct TxEdgeKey {
+pub struct TxEdgeKey {
     code: u8,
     funding_txid: FullHash,
     funding_vout: u16,
 }
 
 #[derive(Serialize, Deserialize)]
-struct TxEdgeValue {
+pub struct TxEdgeValue {
     spending_txid: FullHash,
     spending_vin: u16,
     spending_height: u32,
 }
 
-struct TxEdgeRow {
+pub struct TxEdgeRow {
     key: TxEdgeKey,
     value: TxEdgeValue,
 }
 
 impl TxEdgeRow {
-    fn new(
+    pub fn new(
         funding_txid: FullHash,
         funding_vout: u16,
         spending_txid: FullHash,
@@ -1682,7 +1686,7 @@ impl TxEdgeRow {
             .unwrap()
     }
 
-    fn into_row(self) -> DBRow {
+    pub fn into_row(self) -> DBRow {
         DBRow {
             key: bincode::serialize_little(&self.key).unwrap(),
             value: bincode::serialize_little(&self.value).unwrap(),

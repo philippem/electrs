@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::new_index::db_metrics::RocksDbMetrics;
 use crate::util::{bincode, spawn_thread, Bytes};
 
-static DB_VERSION: u32 = 1;
+static DB_VERSION: u32 = 2;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct DBRow {
@@ -87,7 +87,7 @@ pub enum DBFlush {
 }
 
 impl DB {
-    pub fn open(path: &Path, config: &Config) -> DB {
+    pub fn open(path: &Path, config: &Config, verify_compat: bool) -> DB {
         debug!("opening DB at {:?}", path);
         let mut db_opts = rocksdb::Options::default();
         db_opts.create_if_missing(true);
@@ -119,7 +119,9 @@ impl DB {
         let db = DB {
             db: Arc::new(rocksdb::DB::open(&db_opts, path).expect("failed to open RocksDB"))
         };
-        db.verify_compatibility(config);
+        if verify_compat {
+            db.verify_compatibility(config);
+        }
         db
     }
 
@@ -195,7 +197,7 @@ impl DB {
         self.write_batch(batch, flush)
     }
 
-    fn write_batch(&self, batch: rocksdb::WriteBatch, flush: DBFlush) {
+    pub fn write_batch(&self, batch: rocksdb::WriteBatch, flush: DBFlush) {
         let do_flush = match flush {
             DBFlush::Enable => true,
             DBFlush::Disable => false,
@@ -232,21 +234,20 @@ impl DB {
         self.db.multi_get(keys)
     }
 
-    fn verify_compatibility(&self, config: &Config) {
-        let mut compatibility_bytes = bincode::serialize_little(&DB_VERSION).unwrap();
+    /// Remove database entries in the range [from, to)
+    pub fn delete_range<K: AsRef<[u8]>>(&self, from: K, to: K, flush: DBFlush) {
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.delete_range(from, to);
+        self.write_batch(batch, flush);
+    }
 
-        if config.light_mode {
-            // append a byte to indicate light_mode is enabled.
-            // we're not letting bincode serialize this so that the compatiblity bytes won't change
-            // (and require a reindex) when light_mode is disabled. this should be chagned the next
-            // time we bump DB_VERSION and require a re-index anyway.
-            compatibility_bytes.push(1);
-        }
+    fn verify_compatibility(&self, config: &Config) {
+        let compatibility_bytes = bincode::serialize_little(&(DB_VERSION, config.light_mode)).unwrap();
 
         match self.get(b"V") {
             None => self.put(b"V", &compatibility_bytes),
-            Some(ref x) if x != &compatibility_bytes => {
-                panic!("Incompatible database found. Please reindex.")
+            Some(x) if x != compatibility_bytes => {
+                panic!("Incompatible database found. Please reindex or migrate.")
             }
             Some(_) => (),
         }

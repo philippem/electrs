@@ -144,7 +144,7 @@ impl TestRunner {
             &metrics,
         )?);
 
-        let store = Arc::new(Store::open(&config.db_path.join("newindex"), &config, &metrics));
+        let store = Arc::new(Store::open(&config, &metrics, true));
 
         let fetch_from = if !env::var("JSONRPC_IMPORT").is_ok() && !cfg!(feature = "liquid") {
             // run the initial indexing from the blk files then switch to using the jsonrpc,
