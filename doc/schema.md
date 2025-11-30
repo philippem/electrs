@@ -54,7 +54,7 @@ Each spending input (except the coinbase) results in the following new rows (`S`
 
  * `"H{funding-scripthash}{spending-height}S{spending-txid:vin}{funding-txid:vout}{value}" → ""`
 
- * `"S{funding-txid:vout}{spending-txid:vin}" → ""`
+ * `"S{funding-txid:vout}" → "{spending-txid:vin}{spending-height}"`
 
 Each block results in the following new row:
 
