@@ -718,41 +718,28 @@ fn handle_request(
         }
         (&Method::GET, Some(&"block"), Some(hash), Some(&"txs"), start_index, None) => {
             let hash = BlockHash::from_str(hash)?;
-            let txids = query
-                .chain()
-                .get_block_txids(&hash)
-                .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
-
             let start_index = start_index
                 .map_or(0u32, |el| el.parse().unwrap_or(0))
                 .max(0u32) as usize;
-            if start_index >= txids.len() {
-                bail!(HttpError::not_found("start index out of range".to_string()));
-            } else if start_index % CHAIN_TXS_PER_PAGE != 0 {
-                bail!(HttpError::from(format!(
-                    "start index must be a multipication of {}",
-                    CHAIN_TXS_PER_PAGE
-                )));
-            }
 
-            // blockid_by_hash() only returns the BlockId for non-orphaned blocks,
-            // or None for orphaned
-            let confirmed_blockid = query.chain().blockid_by_hash(&hash);
+            ensure!(
+                start_index % CHAIN_TXS_PER_PAGE == 0,
+                "start index must be a multipication of {}",
+                CHAIN_TXS_PER_PAGE
+            );
 
-            let txs = txids
-                .iter()
-                .skip(start_index)
-                .take(CHAIN_TXS_PER_PAGE)
-                .map(|txid| {
-                    query
-                        .lookup_txn(&txid)
-                        .map(|tx| (tx, confirmed_blockid.clone()))
-                        .ok_or_else(|| "missing tx".to_string())
-                })
-                .collect::<Result<Vec<(Transaction, Option<BlockId>)>, _>>()?;
+            // The BlockId would not be available for stale blocks
+            let blockid = query.chain().blockid_by_hash(&hash);
 
-            // XXX orphraned blocks alway get TTL_SHORT
-            let ttl = ttl_by_depth(confirmed_blockid.map(|b| b.height), query);
+            let txs = query
+                .chain()
+                .get_block_txs(&hash, start_index, CHAIN_TXS_PER_PAGE)?
+                .into_iter()
+                .map(|tx| (tx, blockid))
+                .collect();
+
+            // XXX stale blocks alway get TTL_SHORT
+            let ttl = ttl_by_depth(blockid.map(|b| b.height), query);
 
             json_response(prepare_txs(txs, query, config), ttl)
         }

@@ -1,3 +1,4 @@
+use bitcoin::hex::FromHex;
 use bitcoind::bitcoincore_rpc::RpcApi;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -15,17 +16,9 @@ use common::Result;
 fn test_rest() -> Result<()> {
     let (rest_handle, rest_addr, mut tester) = common::init_rest_tester().unwrap();
 
-    let get_json = |path: &str| -> Result<Value> {
-        Ok(ureq::get(&format!("http://{}{}", rest_addr, path))
-            .call()?
-            .into_json::<Value>()?)
-    };
-
-    let get_plain = |path: &str| -> Result<String> {
-        Ok(ureq::get(&format!("http://{}{}", rest_addr, path))
-            .call()?
-            .into_string()?)
-    };
+    let get = |path: &str| ureq::get(&format!("http://{}{}", rest_addr, path)).call();
+    let get_json = |path: &str| -> Result<Value> { Ok(get(path)?.into_json::<Value>()?) };
+    let get_plain = |path: &str| -> Result<String> { Ok(get(path)?.into_string()?) };
 
     // Send transaction and confirm it
     let addr1 = tester.newaddress()?;
@@ -140,6 +133,14 @@ fn test_rest() -> Result<()> {
         Some(tester.node_client().get_block_count()?)
     );
     assert_eq!(res["tx_count"].as_u64(), Some(2));
+
+    // Test GET /block/:hash/raw
+    let mut res = get(&format!("/block/{}/raw", blockhash))?.into_reader();
+    let mut rest_rawblock = Vec::new();
+    res.read_to_end(&mut rest_rawblock).unwrap();
+    let node_hexblock = // uses low-level call() to support Elements
+        tester.call::<String>("getblock", &[blockhash.to_string().into(), 0.into()])?;
+    assert_eq!(rest_rawblock, Vec::from_hex(&node_hexblock).unwrap());
 
     // Test GET /block/:hash/txs
     let res = get_json(&format!("/block/{}/txs", blockhash))?;
