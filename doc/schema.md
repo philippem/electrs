@@ -25,7 +25,7 @@ Each block results in the following new rows:
 
  * `"M{blockhash}" → "{metadata}"` (block weight, size and number of txs)
 
- * `"D{blockhash}" → ""` (signifies the block is done processing)
+ * `"D{blockhash}" → ""` (signifies the block was added)
 
 Each transaction results in the following new rows:
 
@@ -53,6 +53,10 @@ Each spending input (except the coinbase) results in the following new rows (`S`
  * `"H{funding-scripthash}{spending-height}S{spending-txid:vin}{funding-txid:vout}{value}" → ""`
 
  * `"S{funding-txid:vout}{spending-txid:vin}" → ""`
+
+Each block results in the following new row:
+
+ * `"D{blockhash}" → ""` (signifies the block was indexed)
 
 #### Elements only
 

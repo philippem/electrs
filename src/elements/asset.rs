@@ -509,7 +509,7 @@ where
 
     // save updated stats to cache
     if let Some(lastblock) = lastblock {
-        chain.store().cache_db().write(
+        chain.store().cache_db().write_rows(
             vec![asset_cache_row(asset_id, &newstats, &lastblock)],
             DBFlush::Enable,
         );

@@ -75,8 +75,21 @@ impl Store {
         cache_db.start_stats_exporter(Arc::clone(&db_metrics), "cache_db");
 
         let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
-            let tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
+            let mut tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
             let headers_map = load_blockheaders(&txstore_db);
+
+            // Move the tip back until we reach a block that is indexed in the history db.
+            // It is possible for the tip recorded under the db "t" key to be un-indexed if electrs
+            // shuts down during reorg handling. Normally this wouldn't matter because the non-indexed
+            // block would be stale, but it could matter if the chain later re-orged back to
+            // include the previously stale block because more blocks were built on top of it.
+            // Without this, the stale-then-not-stale block(s) would not get re-indexed correctly.
+            while !indexed_blockhashes.contains(&tip_hash) {
+                tip_hash = headers_map
+                    .get(&tip_hash)
+                    .expect("invalid header chain")
+                    .prev_blockhash;
+            }
             debug!(
                 "{} headers were loaded, tip at {:?}",
                 headers_map.len(),
@@ -259,22 +272,56 @@ impl Indexer {
         db.enable_auto_compaction();
     }
 
-    fn get_new_headers(&self, daemon: &Daemon, tip: &BlockHash) -> Result<Vec<HeaderEntry>> {
-        let headers = self.store.indexed_headers.read().unwrap();
-        let new_headers = daemon.get_new_headers(&headers, &tip)?;
-        let result = headers.order(new_headers);
+    fn get_new_headers(
+        &self,
+        daemon: &Daemon,
+        tip: &BlockHash,
+    ) -> Result<(Vec<HeaderEntry>, Option<usize>)> {
+        let indexed_headers = self.store.indexed_headers.read().unwrap();
+        let raw_new_headers = daemon.get_new_headers(&indexed_headers, &tip)?;
+        let (new_headers, reorged_since) = indexed_headers.preprocess(raw_new_headers);
 
-        if let Some(tip) = result.last() {
-            info!("{:?} ({} left to index)", tip, result.len());
-        };
-        Ok(result)
+        if let Some(tip) = new_headers.last() {
+            info!("{:?} ({} left to index)", tip, new_headers.len());
+        }
+        Ok((new_headers, reorged_since))
     }
 
     pub fn update(&mut self, daemon: &Daemon) -> Result<BlockHash> {
         let daemon = daemon.reconnect()?;
         let tip = daemon.getbestblockhash()?;
-        let new_headers = self.get_new_headers(&daemon, &tip)?;
 
+        let (new_headers, reorged_since) = self.get_new_headers(&daemon, &tip)?;
+
+        // Handle reorgs by undoing the reorged (stale) blocks first
+        if let Some(reorged_since) = reorged_since {
+            // Remove reorged headers from the in-memory HeaderList.
+            // This will also immediately invalidate all the history db entries originating from those blocks
+            // (even before the rows are deleted below), since they reference block heights that will no longer exist.
+            // This ensures consistency - it is not possible for blocks to be available (e.g. in GET /blocks/tip or /block/:hash)
+            // without the corresponding history entries for these blocks (e.g. in GET /address/:address/txs), or vice-versa.
+            let reorged_headers = self
+                .store
+                .indexed_headers
+                .write()
+                .unwrap()
+                .pop(reorged_since);
+            // The chain tip will temporarily drop to the common ancestor (at height reorged_since-1),
+            // until the new headers are `append()`ed (below).
+
+            info!(
+                "processing reorg of depth {} since height {}",
+                reorged_headers.len(),
+                reorged_since,
+            );
+
+            // Fetch the reorged blocks, then undo their history index db rows.
+            // The txstore db rows are kept for reorged blocks/transactions.
+            start_fetcher(self.from, &daemon, reorged_headers)?
+                .map(|blocks| self.undo_index(&blocks));
+        }
+
+        // Add new blocks to the txstore db
         let to_add = self.headers_to_add(&new_headers);
         debug!(
             "adding transactions from {} blocks using {:?}",
@@ -303,6 +350,7 @@ impl Indexer {
 
         self.start_auto_compactions(&self.store.txstore_db);
 
+        // Index new blocks to the history db
         let to_index = self.headers_to_index(&new_headers);
         debug!(
             "indexing history from {} blocks using {:?}",
@@ -320,12 +368,14 @@ impl Indexer {
             self.flush = DBFlush::Enable;
         }
 
-        // update the synced tip *after* the new data is flushed to disk
+        // Update the synced tip after all db writes are flushed
         debug!("updating synced tip to {:?}", tip);
         self.store.txstore_db.put_sync(b"t", &serialize(&tip));
 
+        // Finally, append the new headers to the in-memory HeaderList.
+        // This will make both the headers and the history entries visible in the public APIs, consistently with each-other.
         let mut headers = self.store.indexed_headers.write().unwrap();
-        headers.apply(new_headers);
+        headers.append(new_headers);
         assert_eq!(tip, *headers.tip());
 
         if let FetchFrom::BlkFiles = self.from {
@@ -345,7 +395,7 @@ impl Indexer {
         };
         {
             let _timer = self.start_timer("add_write");
-            self.store.txstore_db.write(rows, self.flush);
+            self.store.txstore_db.write_rows(rows, self.flush);
         }
 
         self.store
@@ -356,6 +406,37 @@ impl Indexer {
     }
 
     fn index(&self, blocks: &[BlockEntry]) {
+        self.store
+            .history_db
+            .write_rows(self._index(blocks), self.flush);
+
+        let mut indexed_blockhashes = self.store.indexed_blockhashes.write().unwrap();
+        indexed_blockhashes.extend(blocks.iter().map(|b| b.entry.hash()));
+    }
+
+    // Undo the history db entries previously written for the given blocks (that were reorged).
+    // This includes the TxHistory, TxEdge and BlockDone rows ('H', 'S' and 'D'),
+    // as well as the Elements history rows ('I' and 'i').
+    //
+    // This does *not* remove any txstore db entries, which are intentionally kept
+    // even for reorged blocks.
+    fn undo_index(&self, blocks: &[BlockEntry]) {
+        self.store
+            .history_db
+            .delete_rows(self._index(blocks), self.flush);
+        // Note this doesn't actually "undo" the rows - the keys are simply deleted, and won't get
+        // reverted back to their prior value (if there was one). It is expected that the history db
+        // keys created by blocks are always unique and impossible to already exist from a prior block.
+        // This is true for all history keys (which always include the height or txid), but for example
+        // not true for the address prefix search index (in the txstore).
+
+        let mut indexed_blockhashes = self.store.indexed_blockhashes.write().unwrap();
+        for block in blocks {
+            indexed_blockhashes.remove(block.entry.hash());
+        }
+    }
+
+    fn _index(&self, blocks: &[BlockEntry]) -> Vec<DBRow> {
         let previous_txos_map = {
             let _timer = self.start_timer("index_lookup");
             lookup_txos(&self.store.txstore_db, get_previous_txos(blocks)).unwrap()
@@ -372,7 +453,7 @@ impl Indexer {
             }
             index_blocks(blocks, &previous_txos_map, &self.iconfig)
         };
-        self.store.history_db.write(rows, self.flush);
+        rows
     }
 
     pub fn fetch_from(&mut self, from: FetchFrom) {
@@ -587,7 +668,7 @@ impl ChainQuery {
         // save updated utxo set to cache
         if let Some(lastblock) = lastblock {
             if had_cache || processed_items > MIN_HISTORY_ITEMS_TO_CACHE {
-                self.store.cache_db.write(
+                self.store.cache_db.write_rows(
                     vec![UtxoCacheRow::new(scripthash, &newutxos, &lastblock).into_row()],
                     DBFlush::Enable,
                 );
@@ -690,7 +771,7 @@ impl ChainQuery {
         // save updated stats to cache
         if let Some(lastblock) = lastblock {
             if newstats.funded_txo_count + newstats.spent_txo_count > MIN_HISTORY_ITEMS_TO_CACHE {
-                self.store.cache_db.write(
+                self.store.cache_db.write_rows(
                     vec![StatsCacheRow::new(scripthash, &newstats, &lastblock).into_row()],
                     DBFlush::Enable,
                 );
