@@ -394,7 +394,7 @@ impl Indexer {
             self.from = FetchFrom::Bitcoind;
         }
 
-        self.tip_metric.set(headers.len() as i64 - 1);
+        self.tip_metric.set(headers.best_height() as i64);
 
         Ok(tip)
     }
@@ -964,8 +964,9 @@ impl ChainQuery {
             .map(BlockId::from)
     }
 
+    /// Get the chain tip height. Panics if called on an empty HeaderList.
     pub fn best_height(&self) -> usize {
-        self.store.indexed_headers.read().unwrap().len() - 1
+        self.store.indexed_headers.read().unwrap().best_height()
     }
 
     pub fn best_hash(&self) -> BlockHash {
@@ -1092,7 +1093,9 @@ impl ChainQuery {
     }
 
     pub fn lookup_confirmations(&self, txids: BTreeSet<Txid>) -> HashMap<Txid, u32> {
-        lookup_confirmations(&self.store.history_db, txids)
+        let _timer = self.start_timer("lookup_confirmations");
+        let headers = self.store.indexed_headers.read().unwrap();
+        lookup_confirmations(&self.store.history_db, headers.best_height() as u32, txids)
     }
 
     pub fn get_block_status(&self, hash: &BlockHash) -> BlockStatus {
@@ -1247,14 +1250,19 @@ fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
         .map(|val| deserialize(&val).expect("failed to parse TxOut"))
 }
 
-pub fn lookup_confirmations(history_db: &DB, txids: BTreeSet<Txid>) -> HashMap<Txid, u32> {
+pub fn lookup_confirmations(
+    history_db: &DB,
+    tip_height: u32,
+    txids: BTreeSet<Txid>,
+) -> HashMap<Txid, u32> {
     history_db
         .multi_get(txids.iter().map(TxConfRow::key))
         .into_iter()
         .zip(txids)
         .filter_map(|(res, txid)| {
             let confirmation_height = u32::from_le_bytes(res.unwrap()?.try_into().unwrap());
-            Some((txid, confirmation_height))
+            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            (confirmation_height <= tip_height).then_some((txid, confirmation_height))
         })
         .collect()
 }
