@@ -270,6 +270,13 @@ impl HeaderList {
         self.headers.len()
     }
 
+    /// Get the chain tip height. Panics if called on an empty HeaderList.
+    pub fn best_height(&self) -> usize {
+        self.len()
+            .checked_sub(1)
+            .expect("best_height() on empty HeaderList")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty()
     }
@@ -284,7 +291,7 @@ impl HeaderList {
         // Matches bitcoind's behaviour: bitcoin-cli getblock `bitcoin-cli getblockhash 0` | jq '.time == .mediantime'
         if height == 0 {
             self.headers.get(0).unwrap().header.time
-        } else if height > self.len() - 1 {
+        } else if height > self.best_height() {
             0
         } else {
             let mut timestamps = (height.saturating_sub(MTP_SPAN - 1)..=height)

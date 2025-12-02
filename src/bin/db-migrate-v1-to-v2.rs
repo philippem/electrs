@@ -38,6 +38,7 @@ fn main() {
     let history_db = store.history_db();
     let cache_db = store.cache_db();
     let headers = store.headers();
+    let tip_height = headers.best_height() as u32;
 
     // Check the DB version under `V` matches the expected version
     for db in [txstore_db, history_db, cache_db] {
@@ -133,7 +134,7 @@ fn main() {
         }
 
         // Lookup the confirmation status for the entire chunk using a MultiGet operation
-        let confirmations = lookup_confirmations(history_db, spending_txids);
+        let confirmations = lookup_confirmations(history_db, tip_height, spending_txids);
 
         let mut batch = WriteBatch::default();
         for (v1_edge, v1_db_key) in v1_edges {
@@ -186,7 +187,7 @@ fn main() {
             }
 
             // Lookup the confirmation status for the entire chunk using a MultiGet operation
-            let confirmations = lookup_confirmations(history_db, history_txids);
+            let confirmations = lookup_confirmations(history_db, tip_height, history_txids);
 
             let mut batch = WriteBatch::default();
             for (hist, db_key) in history_entries {
