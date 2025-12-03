@@ -284,8 +284,8 @@ impl Indexer {
         tip: &BlockHash,
     ) -> Result<(Vec<HeaderEntry>, Option<usize>)> {
         let indexed_headers = self.store.indexed_headers.read().unwrap();
-        let raw_new_headers = daemon.get_new_headers(&indexed_headers, &tip)?;
-        let (new_headers, reorged_since) = indexed_headers.preprocess(raw_new_headers);
+        let raw_new_headers = daemon.get_new_headers(&indexed_headers, tip)?;
+        let (new_headers, reorged_since) = indexed_headers.preprocess(raw_new_headers, tip);
 
         if let Some(tip) = new_headers.last() {
             info!("{:?} ({} left to index)", tip, new_headers.len());

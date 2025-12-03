@@ -2,9 +2,9 @@ use crate::chain::{BlockHash, BlockHeader};
 use crate::errors::*;
 use crate::new_index::BlockEntry;
 
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::fmt;
-use std::iter::FromIterator;
 use std::slice;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime as DateTime;
@@ -128,7 +128,7 @@ impl HeaderList {
         );
 
         let mut headers = HeaderList::empty();
-        headers.append(headers.preprocess(headers_chain).0);
+        headers.append(headers.preprocess(headers_chain, &tip_hash).0);
         headers
     }
 
@@ -138,43 +138,50 @@ impl HeaderList {
     /// Actually applying the headers requires to first pop() the reorged blocks (if any),
     /// then append() the new ones.
     #[trace]
-    pub fn preprocess(&self, new_headers: Vec<BlockHeader>) -> (Vec<HeaderEntry>, Option<usize>) {
+    pub fn preprocess(
+        &self,
+        new_headers: Vec<BlockHeader>,
+        new_tip: &BlockHash,
+    ) -> (Vec<HeaderEntry>, Option<usize>) {
         // header[i] -> header[i-1] (i.e. header.last() is the tip)
-        struct HashedHeader {
-            blockhash: BlockHash,
-            header: BlockHeader,
-        }
-        let hashed_headers =
-            Vec::<HashedHeader>::from_iter(new_headers.into_iter().map(|header| HashedHeader {
-                blockhash: header.block_hash(),
-                header,
-            }));
-        for i in 1..hashed_headers.len() {
-            assert_eq!(
-                hashed_headers[i].header.prev_blockhash,
-                hashed_headers[i - 1].blockhash
-            );
-        }
-        let prev_blockhash = match hashed_headers.first() {
-            Some(h) => h.header.prev_blockhash,
-            None => return (vec![], None), // hashed_headers is empty
-        };
-        let new_height: usize = if prev_blockhash == *DEFAULT_BLOCKHASH {
-            0
+        let (new_height, header_entries) = if !new_headers.is_empty() {
+            let hashed_headers = new_headers
+                .into_iter()
+                .map(|h| (h.block_hash(), h))
+                .collect::<Vec<_>>();
+            for ((curr_blockhash, _), (_, next_header)) in hashed_headers.iter().tuple_windows() {
+                assert_eq!(*curr_blockhash, next_header.prev_blockhash);
+            }
+            assert_eq!(hashed_headers.last().unwrap().0, *new_tip);
+
+            let prev_blockhash = &hashed_headers.first().unwrap().1.prev_blockhash;
+            let new_height = if *prev_blockhash == *DEFAULT_BLOCKHASH {
+                0
+            } else {
+                self.header_by_blockhash(prev_blockhash)
+                    .expect("headers do not connect")
+                    .height()
+                    + 1
+            };
+            let header_entries = (new_height..)
+                .zip(hashed_headers)
+                .map(|(height, (hash, header))| HeaderEntry {
+                    height,
+                    hash,
+                    header,
+                })
+                .collect();
+            (new_height, header_entries)
         } else {
-            self.header_by_blockhash(&prev_blockhash)
-                .unwrap_or_else(|| panic!("{} is not part of the blockchain", prev_blockhash))
+            // No new headers, but the new tip could potentially shorten the chain (or be a no-op if it matches the existing tip)
+            // This should not normally happen, but might due to manual `invalidateblock`
+            let new_height = self
+                .header_by_blockhash(new_tip)
+                .expect("new tip not in chain")
                 .height()
-                + 1
+                + 1;
+            (new_height, vec![])
         };
-        let header_entries = (new_height..)
-            .zip(hashed_headers.into_iter())
-            .map(|(height, hashed_header)| HeaderEntry {
-                height,
-                hash: hashed_header.blockhash,
-                header: hashed_header.header,
-            })
-            .collect();
         let reorged_since = (new_height < self.len()).then_some(new_height);
         (header_entries, reorged_since)
     }
@@ -200,12 +207,9 @@ impl HeaderList {
     #[trace]
     pub fn append(&mut self, new_headers: Vec<HeaderEntry>) {
         // new_headers[i] -> new_headers[i - 1] (i.e. new_headers.last() is the tip)
-        for i in 1..new_headers.len() {
-            assert_eq!(new_headers[i - 1].height() + 1, new_headers[i].height());
-            assert_eq!(
-                *new_headers[i - 1].hash(),
-                new_headers[i].header().prev_blockhash
-            );
+        for (curr_header, next_header) in new_headers.iter().tuple_windows() {
+            assert_eq!(curr_header.height() + 1, next_header.height());
+            assert_eq!(*curr_header.hash(), next_header.header().prev_blockhash);
         }
         let new_height = match new_headers.first() {
             Some(entry) => {

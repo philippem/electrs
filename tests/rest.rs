@@ -399,15 +399,19 @@ fn test_rest() -> Result<()> {
         let c_spends = get_outspend(&tx_b.input[0].previous_output)?;
         assert_eq!(c_spends["spent"].as_bool(), Some(false));
 
+        // Invalidate the tip with no replacement, shortening the chain by one block
+        tester.invalidate_block(&tester.get_best_block_hash()?)?;
+        tester.sync()?;
+        assert_eq!(
+            get_plain("/blocks/tip/height")?,
+            (init_height + 20).to_string()
+        );
+
         // Reorg everything back to genesis
         tester.invalidate_block(&tester.get_block_hash(1)?)?;
-        tester.call::<Value>(
-            "generateblock",
-            &[miner_address.to_string().into(), Vec::<Value>::new().into()],
-        )?;
         tester.sync()?;
 
-        assert_eq!(get_plain("/blocks/tip/height")?, 1.to_string());
+        assert_eq!(get_plain("/blocks/tip/height")?, 0.to_string());
         assert_eq!(
             get_chain_stats(&address)?["funded_txo_sum"].as_u64(),
             Some(0)
