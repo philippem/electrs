@@ -652,7 +652,7 @@ impl ChainQuery {
                 Some(_) => 1, // skip the last_seen_txid itself
                 None => 0,
             })
-            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
             .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?)))
             .take(limit);
 
@@ -684,7 +684,7 @@ impl ChainQuery {
             .map(TxHistoryRow::from_row)
             .map(|row| (row.get_txid(), row.key.confirmed_height as usize))
             .unique()
-            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
             .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?.into())))
             .take(limit)
             .collect()
@@ -763,7 +763,7 @@ impl ChainQuery {
         let history_iter = self
             .history_iter_scan(b'H', scripthash, start_height)
             .map(TxHistoryRow::from_row)
-            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
             .filter_map(|history| {
                 let header = headers.header_by_height(history.key.confirmed_height as usize)?;
                 Some((history, BlockId::from(header)))
@@ -843,7 +843,7 @@ impl ChainQuery {
         let history_iter = self
             .history_iter_scan(b'H', scripthash, start_height)
             .map(TxHistoryRow::from_row)
-            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
             .filter_map(|history| {
                 let header = headers.header_by_height(history.key.confirmed_height as usize)?;
                 Some((history, BlockId::from(header)))
@@ -1050,7 +1050,7 @@ impl ChainQuery {
         let _timer = self.start_timer("lookup_spend");
         let edge = TxEdgeValue::from_bytes(&self.store.history_db.get(&TxEdgeRow::key(outpoint))?);
         let headers = self.store.indexed_headers.read().unwrap();
-        // skip entries that point to non-existing heights (may happen during reorg handling)
+        // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
         let header = headers.header_by_height(edge.spending_height as usize)?;
         Some(SpendingInput {
             txid: deserialize(&edge.spending_txid).expect("failed to parse Txid"),
@@ -1069,7 +1069,7 @@ impl ChainQuery {
             .zip(outpoints)
             .filter_map(|(edge_val, outpoint)| {
                 let edge = TxEdgeValue::from_bytes(&edge_val.unwrap()?);
-                // skip over entries that point to non-existing heights (may happen during reorg handling)
+                // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
                 let header = headers.header_by_height(edge.spending_height as usize)?;
                 Some((
                     outpoint,
@@ -1088,7 +1088,7 @@ impl ChainQuery {
         let row_value = self.store.history_db.get(&TxConfRow::key(txid))?;
         let height = TxConfRow::height_from_val(&row_value);
         let headers = self.store.indexed_headers.read().unwrap();
-        // skip entries that point to non-existing heights (may happen during reorg handling)
+        // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
         Some(headers.header_by_height(height as usize)?.into())
     }
 
@@ -1261,7 +1261,7 @@ pub fn lookup_confirmations(
         .zip(txids)
         .filter_map(|(res, txid)| {
             let confirmation_height = u32::from_le_bytes(res.unwrap()?.try_into().unwrap());
-            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
             (confirmation_height <= tip_height).then_some((txid, confirmation_height))
         })
         .collect()
