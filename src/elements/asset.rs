@@ -531,7 +531,7 @@ fn chain_asset_stats_delta<T>(
         .history_iter_scan(b'I', &asset_id.into_inner()[..], start_height)
         .map(TxHistoryRow::from_row)
         .filter_map(|history| {
-            // skip over entries that point to non-existing heights (may happen during reorg handling)
+            // skip over entries that point to non-existing heights (may happen while new/reorged blocks are being processed)
             let header = headers.header_by_height(history.key.confirmed_height as usize)?;
             Some((history, BlockId::from(header)))
         });
