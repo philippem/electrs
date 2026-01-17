@@ -455,7 +455,7 @@ fn test_rest_block_status() -> Result<()> {
     let blockhash1 = tester.mine()?;
     let blockhash2 = tester.mine()?; // tip
 
-    let block_count = tester.node_client().get_block_count()?;
+    let block_count = tester.get_block_count()?;
 
     // Non-tip block should have next_best pointing to next block
     let res = get_json(rest_addr, &format!("/block/{}/status", blockhash1))?;
@@ -1029,8 +1029,8 @@ fn test_rest_reorg() -> Result<()> {
     Ok(())
 }
 
-// bitcoin 28.0 only tests - submitpackage
-#[cfg(all(not(feature = "liquid"), feature = "bitcoind_28_0"))]
+// submitpackage tests (non-Elements only)
+#[cfg(not(feature = "liquid"))]
 #[test]
 fn test_rest_submit_package() -> Result<()> {
     let (rest_handle, rest_addr, mut tester) = common::init_rest_tester().unwrap();
