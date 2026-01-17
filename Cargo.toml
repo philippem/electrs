@@ -81,7 +81,7 @@ electrs_macros = { path = "electrs_macros", default-features = false }
 bitcoind = { version = "0.36", features = ["25_0"] }
 elementsd = { version = "0.11", features = ["22_1_1"] }
 electrumd = { version = "0.1.0", features = ["4_5_4"] }
-ureq = { version = "2.9", default-features = false, features = ["json"] }
+ureq = { version = "3.1", default-features = false, features = ["json"] }
 tempfile = "3.10"
 criterion = { version = "0.4", features = ["html_reports"] }
 bitcoin-test-data = { version = "*" }

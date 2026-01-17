@@ -15,13 +15,15 @@ fn test_rest() -> Result<()> {
     let get_json = |path: &str| -> Result<Value> {
         Ok(ureq::get(&format!("http://{}{}", rest_addr, path))
             .call()?
-            .into_json::<Value>()?)
+            .into_body()
+            .read_json()?)
     };
 
     let get_plain = |path: &str| -> Result<String> {
         Ok(ureq::get(&format!("http://{}{}", rest_addr, path))
             .call()?
-            .into_string()?)
+            .into_body()
+            .read_to_string()?)
     };
 
     // Send transaction and confirm it
@@ -177,35 +179,44 @@ fn test_rest() -> Result<()> {
     let txid = tester.send(&addr1, "9.9 BTC".parse().unwrap())?;
     let tx_hex = get_plain(&format!("/tx/{}/hex", txid))?;
     // Re-send the tx created by send(). It'll be accepted again since its still in the mempool.
-    let broadcast1_resp = ureq::post(&format!("http://{}/tx", rest_addr)).send_string(&tx_hex)?;
+    let broadcast1_resp = ureq::post(&format!("http://{}/tx", rest_addr)).send(&tx_hex)?;
     assert_eq!(broadcast1_resp.status(), 200);
-    assert_eq!(broadcast1_resp.into_string()?, txid.to_string());
+    assert_eq!(
+        broadcast1_resp.into_body().read_to_string()?,
+        txid.to_string()
+    );
     // Mine the tx then submit it again. Should now fail.
     tester.mine()?;
-    let broadcast2_res = ureq::post(&format!("http://{}/tx", rest_addr)).send_string(&tx_hex);
-    let broadcast2_resp = broadcast2_res.unwrap_err().into_response().unwrap();
+    let broadcast2_resp = ureq::post(&format!("http://{}/tx", rest_addr))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send(&tx_hex)?;
     assert_eq!(broadcast2_resp.status(), 400);
 
     // Test POST /txs/package - simple validation test
     // Test with invalid JSON first to verify the endpoint exists
-    let invalid_package_result = ureq::post(&format!("http://{}/txs/package", rest_addr))
-        .set("Content-Type", "application/json")
-        .send_string("invalid json");
-    let invalid_package_resp = invalid_package_result.unwrap_err().into_response().unwrap();
-    let status = invalid_package_resp.status();
+    let invalid_package_resp = ureq::post(&format!("http://{}/txs/package", rest_addr))
+        .header("Content-Type", "application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send("invalid json")?;
     // Should be 400 for bad JSON, not 404 for missing endpoint
     assert_eq!(
-        status, 400,
+        invalid_package_resp.status(),
+        400,
         "Endpoint should exist and return 400 for invalid JSON"
     );
 
     // Now test with valid but empty package, should fail
-    let empty_package_result = ureq::post(&format!("http://{}/txs/package", rest_addr))
-        .set("Content-Type", "application/json")
-        .send_string("[]");
-    let empty_package_resp = empty_package_result.unwrap_err().into_response().unwrap();
-    let status = empty_package_resp.status();
-    assert_eq!(status, 400);
+    let empty_package_resp = ureq::post(&format!("http://{}/txs/package", rest_addr))
+        .header("Content-Type", "application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send("[]")?;
+    assert_eq!(empty_package_resp.status(), 400);
 
     // bitcoin 28.0 only tests - submitpackage
     #[cfg(all(not(feature = "liquid"), feature = "bitcoind_28_0"))]
@@ -289,17 +300,17 @@ fn test_rest() -> Result<()> {
         // Sign the child transaction
         // We need to provide the parent transaction's output details for signing
         let tx2_sign_result = tester.node_client().call::<Value>(
-        "signrawtransactionwithwallet",
-        &[
-            serde_json::json!(tx2_unsigned_hex),
-            serde_json::json!([{
-                "txid": tx1_txid,
-                "vout": spend_vout_index,
-                "scriptPubKey": tx1_vouts[spend_vout_index]["scriptPubKey"]["hex"].as_str().unwrap(),
-                "amount": spend_vout_value as f64 / 100_000_000.0
-            }])
-        ],
-    )?;
+            "signrawtransactionwithwallet",
+            &[
+                serde_json::json!(tx2_unsigned_hex),
+                serde_json::json!([{
+                    "txid": tx1_txid,
+                    "vout": spend_vout_index,
+                    "scriptPubKey": tx1_vouts[spend_vout_index]["scriptPubKey"]["hex"].as_str().unwrap(),
+                    "amount": spend_vout_value as f64 / 100_000_000.0
+                }])
+            ],
+        )?;
         let tx2_signed_hex = tx2_sign_result["hex"]
             .as_str()
             .expect("signed tx hex")
@@ -324,15 +335,11 @@ fn test_rest() -> Result<()> {
         }
 
         // Now submit this transaction package via the package endpoint
-        let package_json =
-            serde_json::json!([tx1_signed_hex.clone(), tx2_signed_hex.clone()]).to_string();
-        let package_result = ureq::post(&format!("http://{}/txs/package", rest_addr))
-            .set("Content-Type", "application/json")
-            .send_string(&package_json);
+        let package_resp = ureq::post(&format!("http://{}/txs/package", rest_addr))
+            .send_json([tx1_signed_hex, tx2_signed_hex])?;
 
-        let package_resp = package_result.unwrap();
         assert_eq!(package_resp.status(), 200);
-        let package_result = package_resp.into_json::<Value>()?;
+        let package_result = package_resp.into_body().read_json::<Value>()?;
 
         // Verify the response structure
         assert!(package_result["tx-results"].is_object());
