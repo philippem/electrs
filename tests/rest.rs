@@ -20,11 +20,11 @@ fn get(rest_addr: net::SocketAddr, path: &str) -> std::result::Result<ureq::Resp
 }
 
 fn get_json(rest_addr: net::SocketAddr, path: &str) -> Result<Value> {
-    Ok(get(rest_addr, path)?.into_json::<Value>()?)
+    Ok(get(rest_addr, path)?.into_body().read_json()?)
 }
 
 fn get_plain(rest_addr: net::SocketAddr, path: &str) -> Result<String> {
-    Ok(get(rest_addr, path)?.into_string()?)
+    Ok(get(rest_addr, path)?.into_body().read_to_string()?)
 }
 
 #[test]
@@ -396,13 +396,19 @@ fn test_rest_broadcast_tx() -> Result<()> {
     let txid = tester.send(&addr1, "9.9 BTC".parse().unwrap())?;
     let tx_hex = get_plain(rest_addr, &format!("/tx/{}/hex", txid))?;
     // Re-send the tx created by send(). It'll be accepted again since its still in the mempool.
-    let broadcast1_resp = ureq::post(&format!("http://{}/tx", rest_addr)).send_string(&tx_hex)?;
+    let broadcast1_resp = ureq::post(&format!("http://{}/tx", rest_addr)).send(&tx_hex)?;
     assert_eq!(broadcast1_resp.status(), 200);
-    assert_eq!(broadcast1_resp.into_string()?, txid.to_string());
+    assert_eq!(
+        broadcast1_resp.into_body().read_to_string()?,
+        txid.to_string()
+    );
     // Mine the tx then submit it again. Should now fail.
     tester.mine()?;
-    let broadcast2_res = ureq::post(&format!("http://{}/tx", rest_addr)).send_string(&tx_hex);
-    let broadcast2_resp = broadcast2_res.unwrap_err().into_response().unwrap();
+    let broadcast2_resp = ureq::post(&format!("http://{}/tx", rest_addr))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send(&tx_hex)?;
     assert_eq!(broadcast2_resp.status(), 400);
 
     rest_handle.stop();
@@ -415,24 +421,27 @@ fn test_rest_package_validation() -> Result<()> {
 
     // Test POST /txs/package - simple validation test
     // Test with invalid JSON first to verify the endpoint exists
-    let invalid_package_result = ureq::post(&format!("http://{}/txs/package", rest_addr))
-        .set("Content-Type", "application/json")
-        .send_string("invalid json");
-    let invalid_package_resp = invalid_package_result.unwrap_err().into_response().unwrap();
-    let status = invalid_package_resp.status();
+    let invalid_package_resp = ureq::post(&format!("http://{}/txs/package", rest_addr))
+        .header("Content-Type", "application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send("invalid json")?;
     // Should be 400 for bad JSON, not 404 for missing endpoint
     assert_eq!(
-        status, 400,
+        invalid_package_resp.status(),
+        400,
         "Endpoint should exist and return 400 for invalid JSON"
     );
 
     // Now test with valid but empty package, should fail
-    let empty_package_result = ureq::post(&format!("http://{}/txs/package", rest_addr))
-        .set("Content-Type", "application/json")
-        .send_string("[]");
-    let empty_package_resp = empty_package_result.unwrap_err().into_response().unwrap();
-    let status = empty_package_resp.status();
-    assert_eq!(status, 400);
+    let empty_package_resp = ureq::post(&format!("http://{}/txs/package", rest_addr))
+        .header("Content-Type", "application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send("[]")?;
+    assert_eq!(empty_package_resp.status(), 400);
 
     rest_handle.stop();
     Ok(())
@@ -1141,15 +1150,11 @@ fn test_rest_submit_package() -> Result<()> {
     }
 
     // Now submit this transaction package via the package endpoint
-    let package_json =
-        serde_json::json!([tx1_signed_hex.clone(), tx2_signed_hex.clone()]).to_string();
-    let package_result = ureq::post(&format!("http://{}/txs/package", rest_addr))
-        .set("Content-Type", "application/json")
-        .send_string(&package_json);
+    let package_resp = ureq::post(&format!("http://{}/txs/package", rest_addr))
+        .send_json(serde_json::json!([tx1_signed_hex.clone(), tx2_signed_hex.clone()]))?;
 
-    let package_resp = package_result.unwrap();
     assert_eq!(package_resp.status(), 200);
-    let package_result = package_resp.into_json::<Value>()?;
+    let package_result = package_resp.into_body().read_json::<Value>()?;
 
     // Verify the response structure
     assert!(package_result["tx-results"].is_object());
