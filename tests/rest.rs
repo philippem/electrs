@@ -1,6 +1,5 @@
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::hex::FromHex;
-use bitcoind::bitcoincore_rpc::RpcApi;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::Read;
@@ -8,6 +7,9 @@ use std::net;
 
 #[cfg(not(feature = "liquid"))]
 use {bitcoin::Amount, serde_json::from_value};
+
+#[cfg(feature = "liquid")]
+use elementsd::bitcoincore_rpc::RpcApi;
 
 use electrs::chain::Txid;
 
@@ -202,7 +204,7 @@ fn test_rest_blocks() -> Result<()> {
     let (rest_handle, rest_addr, mut tester) = common::init_rest_tester().unwrap();
 
     // Test GET /blocks/tip/hash
-    let bestblockhash = tester.node_client().get_best_block_hash()?;
+    let bestblockhash = tester.get_best_block_hash()?;
     let res = get_plain(rest_addr, "/blocks/tip/hash")?;
     assert_eq!(res, bestblockhash.to_string());
 
@@ -211,7 +213,7 @@ fn test_rest_blocks() -> Result<()> {
     assert_eq!(res, bestblockhash.to_string());
 
     // Test GET /blocks/tip/height
-    let bestblockheight = tester.node_client().get_block_count()?;
+    let bestblockheight = tester.get_block_count()?;
     let res = get_plain(rest_addr, "/blocks/tip/height")?;
     assert_eq!(
         res.parse::<u64>().expect("tip block height as an int"),
@@ -288,10 +290,7 @@ fn test_rest_block() -> Result<()> {
 
     let res = get_json(rest_addr, &format!("/block/{}", blockhash))?;
     assert_eq!(res["id"].as_str(), Some(blockhash.to_string().as_str()));
-    assert_eq!(
-        res["height"].as_u64(),
-        Some(tester.node_client().get_block_count()?)
-    );
+    assert_eq!(res["height"].as_u64(), Some(tester.get_block_count()?));
     assert_eq!(res["tx_count"].as_u64(), Some(2));
 
     // Cross-reference BlockValue fields against bitcoind's getblockheader

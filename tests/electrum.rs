@@ -4,7 +4,6 @@ use std::net::TcpStream;
 
 use common::Result;
 
-use bitcoind::bitcoincore_rpc::RpcApi;
 use electrumd::jsonrpc::serde_json::json;
 use electrumd::ElectrumD;
 
@@ -13,6 +12,9 @@ use electrs::electrum::RPC as ElectrumRPC;
 
 #[cfg(not(feature = "liquid"))]
 use bitcoin::address;
+
+#[cfg(feature = "liquid")]
+use elementsd::bitcoincore_rpc::RpcApi;
 
 struct WalletTester {
     electrum_server: ElectrumRPC,
