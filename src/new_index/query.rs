@@ -65,7 +65,7 @@ impl Query {
         self.config.network_type
     }
 
-    pub fn mempool(&self) -> RwLockReadGuard<Mempool> {
+    pub fn mempool(&self) -> RwLockReadGuard<'_, Mempool> {
         self.mempool.read().unwrap()
     }
 

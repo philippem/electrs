@@ -285,7 +285,7 @@ impl HeaderList {
         self.headers.is_empty()
     }
 
-    pub fn iter(&self) -> slice::Iter<HeaderEntry> {
+    pub fn iter(&self) -> slice::Iter<'_, HeaderEntry> {
         self.headers.iter()
     }
 
