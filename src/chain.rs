@@ -139,7 +139,6 @@ pub fn bitcoin_genesis_hash(network: BNetwork) -> bitcoin::BlockHash {
         BNetwork::Testnet4 => *TESTNET4_GENESIS,
         BNetwork::Regtest => *REGTEST_GENESIS,
         BNetwork::Signet => *SIGNET_GENESIS,
-        _ => panic!("unknown network {:?}", network),
     }
 }
 
@@ -211,7 +210,6 @@ impl From<BNetwork> for Network {
             BNetwork::Testnet4 => Network::Testnet4,
             BNetwork::Regtest => Network::Regtest,
             BNetwork::Signet => Network::Signet,
-            _ => panic!("unknown network {:?}", network),
         }
     }
 }
