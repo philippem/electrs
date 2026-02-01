@@ -79,7 +79,7 @@ electrs_macros = { path = "electrs_macros", default-features = false }
 [dev-dependencies]
 corepc-node = { version = "0.10", features = ["download", "29_0"] }
 elementsd = { version = "0.11", features = ["22_1_1"] }
-electrumd = { version = "0.1.0", features = ["4_5_4"] }
+electrumd = { version = "0.1.0", features = ["4_6_2"] }
 ureq = { version = "3.1", default-features = false, features = ["json"] }
 tempfile = "3.10"
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -103,4 +103,4 @@ rev = "d3792352992a539afffbe11501d1aff9fd5b919d"            # add-peer branch
 # not yet published on crates.io
 [patch.crates-io.electrumd]
 git = "https://github.com/shesek/electrumd"
-rev = "b35d9db285d932cb3c2296beab65e571a2506349"
+rev = "9897271b3538ef1e20166ec870746af8167a8d4b"

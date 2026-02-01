@@ -37,6 +37,7 @@ fn test_electrum() -> Result<()> {
     let notify_wallet = || {
         electrum_server.notify();
         std::thread::sleep(std::time::Duration::from_millis(200));
+        electrum_wallet.call("wait_for_sync", &json!([])).unwrap();
     };
 
     let assert_balance = |confirmed: f64, unconfirmed: f64| {
@@ -108,18 +109,18 @@ fn test_electrum() -> Result<()> {
     let history = electrum_wallet.call("onchain_history", &json!([]))?;
     log::debug!("history = {:#?}", history);
     assert_eq!(
-        history["transactions"][0]["txid"].as_str(),
+        history[0]["txid"].as_str(),
         Some(txid1.to_string().as_str())
     );
-    assert_eq!(history["transactions"][0]["height"].as_u64(), Some(102));
-    assert_eq!(history["transactions"][0]["bc_value"].as_str(), Some("0.1"));
+    assert_eq!(history[0]["height"].as_u64(), Some(102));
+    assert_eq!(history[0]["bc_value"].as_str(), Some("0.1"));
 
     assert_eq!(
-        history["transactions"][1]["txid"].as_str(),
+        history[1]["txid"].as_str(),
         Some(txid2.to_string().as_str())
     );
-    assert_eq!(history["transactions"][1]["height"].as_u64(), Some(103));
-    assert_eq!(history["transactions"][1]["bc_value"].as_str(), Some("0.2"));
+    assert_eq!(history[1]["height"].as_u64(), Some(103));
+    assert_eq!(history[1]["bc_value"].as_str(), Some("0.2"));
 
     // Send an outgoing payment
     electrum_wallet.call(
