@@ -1047,8 +1047,8 @@ fn handle_request(
                             HttpError::from(format!("Invalid transaction hex for item {}", index))
                         })?
                         .filter(|r| r.is_err())
-						.next()
-						.transpose()
+                        .next()
+                        .transpose()
                         .map_err(|_| {
                             HttpError::from(format!("Invalid transaction hex for item {}", index))
                         })
