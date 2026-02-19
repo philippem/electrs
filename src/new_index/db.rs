@@ -110,10 +110,14 @@ impl DB {
         // db_opts.set_advise_random_on_open(???);
         db_opts.set_compaction_readahead_size(1 << 20);
 
-        // Configure block cache
+        // Configure block cache and bloom filters
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache_size_bytes = config.db_block_cache_mb * 1024 * 1024;
         block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(cache_size_bytes));
+        // Bloom filter: 10 bits/key, full-filter mode (not block-based).
+        // Lets RocksDB skip SST files that definitely don't contain a key,
+        // reducing disk reads for point lookups (e.g. lookup_txos during indexing).
+        block_opts.set_bloom_filter(10.0, false);
         db_opts.set_block_based_table_factory(&block_opts);
 
         let db = DB {
