@@ -309,23 +309,33 @@ impl bitcoincore_rpc::RpcApi for TestRunner {
 
 pub fn init_rest_tester() -> Result<(rest::Handle, net::SocketAddr, TestRunner)> {
     let tester = TestRunner::new()?;
+    let addr = tester.config.http_addr;
     let rest_server = rest::start(Arc::clone(&tester.config), Arc::clone(&tester.query));
-    log::info!("REST server running on {}", tester.config.http_addr);
-    Ok((rest_server, tester.config.http_addr, tester))
+    wait_for_tcp(addr, "REST");
+    Ok((rest_server, addr, tester))
 }
 pub fn init_electrum_tester() -> Result<(ElectrumRPC, net::SocketAddr, TestRunner)> {
     let tester = TestRunner::new()?;
+    let addr = tester.config.electrum_rpc_addr;
     let electrum_server = ElectrumRPC::start(
         Arc::clone(&tester.config),
         Arc::clone(&tester.query),
         &tester.metrics,
         Arc::clone(&tester.salt_rwlock),
     );
-    log::info!(
-        "Electrum server running on {}",
-        tester.config.electrum_rpc_addr
-    );
-    Ok((electrum_server, tester.config.electrum_rpc_addr, tester))
+    wait_for_tcp(addr, "Electrum");
+    Ok((electrum_server, addr, tester))
+}
+
+fn wait_for_tcp(addr: net::SocketAddr, name: &str) {
+    for _ in 0..50 {
+        if net::TcpStream::connect(addr).is_ok() {
+            log::info!("{} server running on {}", name, addr);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("{} server failed to start on {}", name, addr);
 }
 
 #[cfg(not(feature = "liquid"))]
@@ -366,9 +376,21 @@ fn init_log() -> StdErrLog {
 }
 
 fn rand_available_addr() -> net::SocketAddr {
-    // note this has a potential but unlikely race condition, if the port is grabbed before the caller binds it
-    let socket = net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.local_addr().unwrap()
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    lazy_static::lazy_static! {
+        static ref USED_PORTS: Mutex<HashSet<u16>> = Mutex::new(HashSet::new());
+    }
+
+    loop {
+        let mut used = USED_PORTS.lock().unwrap();
+        let socket = net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = socket.local_addr().unwrap();
+        if used.insert(addr.port()) {
+            return addr;
+        }
+    }
 }
 
 error_chain::error_chain! {
