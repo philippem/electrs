@@ -57,8 +57,8 @@ pub struct Config {
     pub db_block_cache_mb: usize,
 
     /// RocksDB parallelism level (background compaction and flush threads)
-    /// Recommendation: Set to number of CPU cores for optimal performance
-    /// This configures max_background_jobs and thread pools automatically
+    /// Configures max_background_jobs and thread pools automatically.
+    /// Default: min(num_cpus, 16). Higher values speed up full compaction and background flushes.
     pub db_parallelism: usize,
 
     /// RocksDB write buffer size in MB (per database)
@@ -242,9 +242,8 @@ impl Config {
             ).arg(
                 Arg::with_name("db_parallelism")
                     .long("db-parallelism")
-                    .help("RocksDB parallelism level. Set to number of CPU cores for optimal performance")
+                    .help("RocksDB parallelism level (background compaction/flush threads). Default: min(num_cpus, 16)")
                     .takes_value(true)
-                    .default_value("2")
             ).arg(
                 Arg::with_name("db_write_buffer_size_mb")
                     .long("db-write-buffer-size-mb")
@@ -489,7 +488,10 @@ impl Config {
             precache_scripts: m.value_of("precache_scripts").map(|s| s.to_string()),
             initial_sync_compaction: m.is_present("initial_sync_compaction"),
             db_block_cache_mb: value_t_or_exit!(m, "db_block_cache_mb", usize),
-            db_parallelism: value_t_or_exit!(m, "db_parallelism", usize),
+            db_parallelism: m
+                .value_of("db_parallelism")
+                .map(|s| s.parse::<usize>().expect("invalid --db-parallelism value"))
+                .unwrap_or_else(|| num_cpus::get().min(16)),
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
             zmq_addr,
 
