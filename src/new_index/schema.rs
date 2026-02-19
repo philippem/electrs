@@ -250,20 +250,13 @@ impl Indexer {
         self.duration.with_label_values(&[name]).start_timer()
     }
 
-    fn headers_to_add(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
-        let added_blockhashes = self.store.added_blockhashes.read().unwrap();
+    // Headers that need any work: either not yet added to txstore or not yet indexed to history.
+    fn headers_to_process(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
+        let added = self.store.added_blockhashes.read().unwrap();
+        let indexed = self.store.indexed_blockhashes.read().unwrap();
         new_headers
             .iter()
-            .filter(|e| !added_blockhashes.contains(e.hash()))
-            .cloned()
-            .collect()
-    }
-
-    fn headers_to_index(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
-        let indexed_blockhashes = self.store.indexed_blockhashes.read().unwrap();
-        new_headers
-            .iter()
-            .filter(|e| !indexed_blockhashes.contains(e.hash()))
+            .filter(|e| !added.contains(e.hash()) || !indexed.contains(e.hash()))
             .cloned()
             .collect()
     }
@@ -333,43 +326,72 @@ impl Indexer {
                 .map(|blocks| self.undo_index(&blocks));
         }
 
-        // Add new blocks to the txstore db
-        let to_add = self.headers_to_add(&new_headers);
+        // Single-pass: add to txstore and index to history in the same per-batch loop.
+        //
+        // In the old two-pass approach, txstore_db was fully compacted between the add
+        // and index passes, which pushed all O rows into large SST files deep in the LSM
+        // tree. With only a small block cache, lookup_txos() during indexing then caused
+        // nearly every key to require a disk read.
+        //
+        // By interleaving add() and index() in the same batch, the O rows written by
+        // add() are still in the write buffer (or nearby L0 SST files) when index()
+        // calls lookup_txos() — dramatically increasing cache hit rate.
+        //
+        // Crash safety: added_blockhashes / indexed_blockhashes are persisted via the
+        // "D" done-marker rows. On restart, headers_to_process() re-derives which
+        // blocks still need work, so partially-processed batches are re-processed safely.
+        let to_process = self.headers_to_process(&new_headers);
         debug!(
-            "adding transactions from {} blocks using {:?}",
-            to_add.len(),
+            "processing {} blocks (add + index) using {:?}",
+            to_process.len(),
             self.from
         );
 
         let mut fetcher_count = 0;
         let mut blocks_fetched = 0;
-        let to_add_total = to_add.len();
+        let to_process_total = to_process.len();
 
-        start_fetcher(self.from, &daemon, to_add)?.map(|blocks|
-            {
-                if fetcher_count % 25 == 0 && to_add_total > 20 {
-                    info!("adding txes from blocks {}/{} ({:.1}%)",
-                        blocks_fetched,
-                        to_add_total,
-                        blocks_fetched as f32 / to_add_total as f32 * 100.0
-                    );
-                }
-                fetcher_count += 1;
-                blocks_fetched += blocks.len();
+        start_fetcher(self.from, &daemon, to_process)?.map(|blocks| {
+            if fetcher_count % 25 == 0 && to_process_total > 20 {
+                info!(
+                    "processing blocks {}/{} ({:.1}%)",
+                    blocks_fetched,
+                    to_process_total,
+                    blocks_fetched as f32 / to_process_total as f32 * 100.0
+                );
+            }
+            fetcher_count += 1;
+            blocks_fetched += blocks.len();
 
-                self.add(&blocks)
-            });
+            // Add blocks not yet in txstore (idempotent: crash recovery skips already-added blocks)
+            let to_add: Vec<_> = {
+                let added = self.store.added_blockhashes.read().unwrap();
+                blocks
+                    .iter()
+                    .filter(|b| !added.contains(b.entry.hash()))
+                    .cloned()
+                    .collect()
+            };
+            if !to_add.is_empty() {
+                self.add(&to_add);
+            }
 
+            // Index blocks not yet in history (O rows for to_add are now in the write buffer)
+            let to_index: Vec<_> = {
+                let indexed = self.store.indexed_blockhashes.read().unwrap();
+                blocks
+                    .iter()
+                    .filter(|b| !indexed.contains(b.entry.hash()))
+                    .cloned()
+                    .collect()
+            };
+            if !to_index.is_empty() {
+                self.index(&to_index);
+            }
+        });
+
+        // Compact after all add+index work is done, not between passes.
         self.start_auto_compactions(&self.store.txstore_db);
-
-        // Index new blocks to the history db
-        let to_index = self.headers_to_index(&new_headers);
-        debug!(
-            "indexing history from {} blocks using {:?}",
-            to_index.len(),
-            self.from
-        );
-        start_fetcher(self.from, &daemon, to_index)?.map(|blocks| self.index(&blocks));
         self.start_auto_compactions(&self.store.history_db);
         self.start_auto_compactions(&self.store.cache_db);
 
