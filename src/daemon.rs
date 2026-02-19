@@ -523,28 +523,32 @@ impl Daemon {
     // buffering the replies into a vector. If any of the requests fail, processing is terminated and an Err is returned.
     #[trace]
     fn requests(&self, method: &str, params_list: Vec<Value>) -> Result<Vec<Value>> {
-        self.requests_iter(method, params_list).collect()
+        self.rpc_threads
+            .install(|| self.requests_iter(method, params_list).collect())
     }
 
     // Send requests in parallel over multiple RPC connections, iterating over the results without buffering them.
     // Errors are included in the iterator and do not terminate other pending requests.
+    //
+    // IMPORTANT: The returned parallel iterator must be collected inside self.rpc_threads.install()
+    // to ensure it runs on the daemon's own thread pool, not the global rayon pool. This is necessary
+    // because the per-thread DAEMON_INSTANCE thread-locals would otherwise be shared across different
+    // daemon instances in the same process (e.g. during parallel tests).
     #[trace]
     fn requests_iter<'a>(
         &'a self,
         method: &'a str,
         params_list: Vec<Value>,
     ) -> impl ParallelIterator<Item = Result<Value>> + IndexedParallelIterator + 'a {
-        self.rpc_threads.install(move || {
-            params_list.into_par_iter().map(move |params| {
-                // Store a local per-thread Daemon, each with its own TCP connection. These will
-                // get initialized as necessary for the `rpc_threads` pool thread managed by rayon.
-                thread_local!(static DAEMON_INSTANCE: OnceCell<Daemon> = OnceCell::new());
+        params_list.into_par_iter().map(move |params| {
+            // Store a local per-thread Daemon, each with its own TCP connection. These will
+            // get initialized as necessary for the `rpc_threads` pool thread managed by rayon.
+            thread_local!(static DAEMON_INSTANCE: OnceCell<Daemon> = OnceCell::new());
 
-                DAEMON_INSTANCE.with(|daemon| {
-                    daemon
-                        .get_or_init(|| self.retry_reconnect())
-                        .retry_request(&method, &params)
-                })
+            DAEMON_INSTANCE.with(|daemon| {
+                daemon
+                    .get_or_init(|| self.retry_reconnect())
+                    .retry_request(&method, &params)
             })
         })
     }
@@ -647,20 +651,22 @@ impl Daemon {
             .map(|txhash| json!([txhash, /*verbose=*/ false]))
             .collect();
 
-        self.requests_iter("getrawtransaction", params_list)
-            .zip(txids)
-            .filter_map(|(res, txid)| match res {
-                Ok(val) => Some(tx_from_value(val).map(|tx| (**txid, tx))),
-                // Ignore 'tx not found' errors
-                Err(Error(ErrorKind::RpcError(code, _, _), _))
-                    if code == RPC_INVALID_ADDRESS_OR_KEY =>
-                {
-                    None
-                }
-                // Terminate iteration if any other errors are encountered
-                Err(e) => Some(Err(e)),
-            })
-            .collect()
+        self.rpc_threads.install(|| {
+            self.requests_iter("getrawtransaction", params_list)
+                .zip(txids)
+                .filter_map(|(res, txid)| match res {
+                    Ok(val) => Some(tx_from_value(val).map(|tx| (**txid, tx))),
+                    // Ignore 'tx not found' errors
+                    Err(Error(ErrorKind::RpcError(code, _, _), _))
+                        if code == RPC_INVALID_ADDRESS_OR_KEY =>
+                    {
+                        None
+                    }
+                    // Terminate iteration if any other errors are encountered
+                    Err(e) => Some(Err(e)),
+                })
+                .collect()
+        })
     }
 
     #[trace]
@@ -773,11 +779,12 @@ impl Daemon {
 
             result.append(&mut headers);
 
-            info!("downloaded {}/{} block headers ({:.0}%)",
+            info!(
+                "downloaded {}/{} block headers ({:.0}%)",
                 result.len(),
                 tip_height,
-                result.len() as f32 / tip_height as f32 * 100.0);
-
+                result.len() as f32 / tip_height as f32 * 100.0
+            );
         }
 
         let mut blockhash = *DEFAULT_BLOCKHASH;
