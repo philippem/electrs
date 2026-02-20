@@ -295,15 +295,44 @@ impl TestRunner {
     }
 }
 
-// Make the RpcApi methods available directly on TestRunner,
-// without having to go through the node_client() getter
-impl bitcoincore_rpc::RpcApi for TestRunner {
-    fn call<T: for<'a> serde::de::Deserialize<'a>>(
+impl TestRunner {
+    // Make the node_client's call() available directly on TestRunner
+    pub fn call<T: for<'a> serde::de::Deserialize<'a>>(
         &self,
         cmd: &str,
         args: &[serde_json::Value],
-    ) -> bitcoincore_rpc::Result<T> {
-        self.node_client().call(cmd, args)
+    ) -> Result<T> {
+        Ok(self.node_client().call(cmd, args)?)
+    }
+
+    pub fn invalidate_block(&self, block_hash: &BlockHash) -> Result<()> {
+        self.call("invalidateblock", &[block_hash.to_string().into()])
+    }
+
+    pub fn generate_to_address(&self, count: u64, address: &Address) -> Result<Vec<BlockHash>> {
+        let hashes: Vec<String> =
+            self.call("generatetoaddress", &[count.into(), address.to_string().into()])?;
+        Ok(hashes
+            .into_iter()
+            .map(|h| h.parse().expect("valid block hash"))
+            .collect())
+    }
+
+    pub fn get_block_hash(&self, height: u64) -> Result<BlockHash> {
+        let hash: String = self.call("getblockhash", &[height.into()])?;
+        Ok(hash.parse().expect("valid block hash"))
+    }
+
+    #[cfg(not(feature = "liquid"))]
+    pub fn get_raw_transaction(
+        &self,
+        txid: &Txid,
+        _block_hash: Option<&BlockHash>,
+    ) -> Result<bitcoin::Transaction> {
+        use bitcoin::hex::FromHex;
+        let tx_hex: String = self.call("getrawtransaction", &[txid.to_string().into()])?;
+        let tx_bytes = Vec::<u8>::from_hex(&tx_hex).expect("valid hex");
+        Ok(bitcoin::consensus::deserialize(&tx_bytes).expect("valid transaction"))
     }
 }
 

@@ -17,16 +17,16 @@ pub mod common;
 
 use common::Result;
 
-fn get(rest_addr: net::SocketAddr, path: &str) -> std::result::Result<ureq::Response, ureq::Error> {
-    ureq::get(&format!("http://{}{}", rest_addr, path)).call()
+fn get_body(rest_addr: net::SocketAddr, path: &str) -> std::result::Result<ureq::Body, ureq::Error> {
+    Ok(ureq::get(&format!("http://{}{}", rest_addr, path)).call()?.into_body())
 }
 
 fn get_json(rest_addr: net::SocketAddr, path: &str) -> Result<Value> {
-    Ok(get(rest_addr, path)?.into_body().read_json()?)
+    Ok(get_body(rest_addr, path)?.read_json()?)
 }
 
 fn get_plain(rest_addr: net::SocketAddr, path: &str) -> Result<String> {
-    Ok(get(rest_addr, path)?.into_body().read_to_string()?)
+    Ok(get_body(rest_addr, path)?.read_to_string()?)
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn test_rest_block() -> Result<()> {
     }
 
     // Test GET /block/:hash/raw
-    let mut res = get(rest_addr, &format!("/block/{}/raw", blockhash))?.into_reader();
+    let mut res = get_body(rest_addr, &format!("/block/{}/raw", blockhash))?.into_reader();
     let mut rest_rawblock = Vec::new();
     res.read_to_end(&mut rest_rawblock).unwrap();
     let node_hexblock = // uses low-level call() to support Elements
@@ -826,7 +826,7 @@ fn test_rest_reorg() -> Result<()> {
         )
     };
 
-    let init_height = tester.node_client().get_block_count()?;
+    let init_height = tester.get_block_count()?;
 
     let address = tester.newaddress()?;
     let miner_address = tester.newaddress()?;
