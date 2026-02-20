@@ -255,7 +255,9 @@ impl DB {
 
     pub fn start_stats_exporter(&self, db_metrics: Arc<RocksDbMetrics>, db_name: &str) {
         let db_arc = Arc::clone(&self.db);
+        let db_arc_levels = Arc::clone(&self.db);
         let label = db_name.to_string();
+        let label_levels = label.clone();
 
         let update_gauge = move |gauge: &GaugeVec, property: &str| {
             if let Ok(Some(value)) = db_arc.property_value(property) {
@@ -299,6 +301,17 @@ impl DB {
             update_gauge(&db_metrics.block_cache_capacity, "rocksdb.block-cache-capacity");
             update_gauge(&db_metrics.block_cache_usage, "rocksdb.block-cache-usage");
             update_gauge(&db_metrics.block_cache_pinned_usage, "rocksdb.block-cache-pinned-usage");
+            for level in 0..7u32 {
+                let prop = format!("rocksdb.num-files-at-level{}", level);
+                let level_str = level.to_string();
+                if let Ok(Some(value)) = db_arc_levels.property_value(&prop) {
+                    if let Ok(v) = value.parse::<f64>() {
+                        db_metrics.num_files_at_level
+                            .with_label_values(&[&label_levels, &level_str])
+                            .set(v);
+                    }
+                }
+            }
             thread::sleep(Duration::from_secs(5));
         });
     }
