@@ -121,8 +121,17 @@ impl DB {
         // Configure write buffer size (not set by increase_parallelism)
         db_opts.set_write_buffer_size(config.db_write_buffer_size_mb * 1024 * 1024);
 
-        // db_opts.set_advise_random_on_open(???);
         db_opts.set_compaction_readahead_size(1 << 20);
+
+        // Background-sync SST files to the OS incrementally as they are written,
+        // rather than doing a large fsync on close. Smooths out I/O latency spikes.
+        db_opts.set_bytes_per_sync(1 << 20);
+
+        // Bypass the OS page cache for flush and compaction writes. When the block
+        // cache is large the OS would otherwise double-buffer the same data in both
+        // the RocksDB block cache and the page cache; direct I/O avoids that waste.
+        // compaction_readahead_size (set above) is required when using direct I/O.
+        db_opts.set_use_direct_io_for_flush_and_compaction(true);
 
         // Configure block cache and bloom filters
         let mut block_opts = rocksdb::BlockBasedOptions::default();
