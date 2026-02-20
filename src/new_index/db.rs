@@ -127,10 +127,13 @@ impl DB {
         // Configure write buffer size (not set by increase_parallelism)
         db_opts.set_write_buffer_size(config.db_write_buffer_size_mb * 1024 * 1024);
 
-        // db_opts.set_advise_random_on_open(???);
         db_opts.set_compaction_readahead_size(1 << 20);
 
-        // Configure block cache
+        // Background-sync SST files to the OS incrementally as they are written,
+        // rather than doing a large fsync on close. Smooths out I/O latency spikes.
+        db_opts.set_bytes_per_sync(1 << 20);
+
+        // Configure block cache and bloom filters
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache_size_bytes = config.db_block_cache_mb * 1024 * 1024;
         block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(cache_size_bytes));
