@@ -96,6 +96,20 @@ impl DB {
         db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
         db_opts.set_target_file_size_base(1_073_741_824);
         db_opts.set_disable_auto_compactions(!config.initial_sync_compaction); // for initial bulk load
+        if !config.initial_sync_compaction {
+            // With auto-compaction disabled, L0 files accumulate without being
+            // compacted into L1+. RocksDB's default level0_stop_writes_trigger
+            // (36 files) will block all writes via WaitUntilFlushWouldNotStallWrites
+            // once that threshold is hit — and since nothing is compacting, it
+            // waits forever. Raise the triggers to near-infinity so writes are
+            // never stalled during the initial bulk load.
+            db_opts.set_level_zero_file_num_compaction_trigger(1 << 30);
+            db_opts.set_level_zero_slowdown_writes_trigger(1 << 30);
+            db_opts.set_level_zero_stop_writes_trigger(1 << 30);
+            // Similarly, disable the pending-compaction-bytes stall limit.
+            db_opts.set_hard_pending_compaction_bytes_limit(0);
+            db_opts.set_soft_pending_compaction_bytes_limit(0);
+        }
 
 
         let parallelism: i32 = config.db_parallelism.try_into()
