@@ -1,4 +1,5 @@
 use prometheus::GaugeVec;
+use rayon::prelude::*;
 use rocksdb;
 
 use std::convert::TryInto;
@@ -240,7 +241,7 @@ impl DB {
             self.db,
             flush
         );
-        rows.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        rows.par_sort_unstable_by(|a, b| a.key.cmp(&b.key));
         let mut batch = rocksdb::WriteBatch::default();
         for row in rows {
             batch.put(&row.key, &row.value);
@@ -250,7 +251,7 @@ impl DB {
 
     pub fn delete_rows(&self, mut rows: Vec<DBRow>, flush: DBFlush) {
         log::trace!("deleting {} rows from {:?}", rows.len(), self.db,);
-        rows.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        rows.par_sort_unstable_by(|a, b| a.key.cmp(&b.key));
         let mut batch = rocksdb::WriteBatch::default();
         for row in rows {
             batch.delete(&row.key);
