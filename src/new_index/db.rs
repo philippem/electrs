@@ -133,7 +133,13 @@ impl DB {
         // rather than doing a large fsync on close. Smooths out I/O latency spikes.
         db_opts.set_bytes_per_sync(1 << 20);
 
-        // Configure block cache and bloom filters
+        // Parallelize sub-ranges within a single compaction job (including the one-time
+        // full_compaction at the end of initial sync). Without this, compact_range() is
+        // single-threaded regardless of increase_parallelism(). Setting it equal to the
+        // parallelism level keeps all background threads busy during the final compaction.
+        db_opts.set_max_subcompactions(parallelism as u32);
+
+        // Configure block cache and table options
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache_size_bytes = config.db_block_cache_mb * 1024 * 1024;
         block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(cache_size_bytes));
@@ -158,7 +164,6 @@ impl DB {
     }
 
     pub fn full_compaction(&self) {
-        // TODO: make sure this doesn't fail silently
         info!("starting full compaction on {:?}", self.db);
         self.db.compact_range(None::<&[u8]>, None::<&[u8]>);
         info!("finished full compaction on {:?}", self.db);
