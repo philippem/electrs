@@ -32,12 +32,12 @@ pub fn start_fetcher(
     from: FetchFrom,
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
+    batch_size: usize,
 ) -> Result<Fetcher<Vec<BlockEntry>>> {
-    let fetcher = match from {
-        FetchFrom::Bitcoind => bitcoind_fetcher,
-        FetchFrom::BlkFiles => blkfiles_fetcher,
-    };
-    fetcher(daemon, new_headers)
+    match from {
+        FetchFrom::Bitcoind => bitcoind_fetcher(daemon, new_headers, batch_size),
+        FetchFrom::BlkFiles => blkfiles_fetcher(daemon, new_headers),
+    }
 }
 
 #[derive(Clone)]
@@ -74,6 +74,7 @@ impl<T> Fetcher<T> {
 fn bitcoind_fetcher(
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
+    batch_size: usize,
 ) -> Result<Fetcher<Vec<BlockEntry>>> {
     if let Some(tip) = new_headers.last() {
         debug!("{:?} ({} left to index)", tip, new_headers.len());
@@ -87,7 +88,7 @@ fn bitcoind_fetcher(
             let mut fetcher_count = 0;
             let mut blocks_fetched = 0;
             let total_blocks_fetched = new_headers.len();
-            for entries in new_headers.chunks(100) {
+            for entries in new_headers.chunks(batch_size) {
                 if fetcher_count % 50 == 0 && total_blocks_fetched >= 50 {
                     info!("fetching blocks {}/{} ({:.1}%)",
                         blocks_fetched,
