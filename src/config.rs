@@ -64,6 +64,12 @@ pub struct Config {
     /// Larger buffers = fewer flushes (less CPU) but more RAM usage
     pub db_write_buffer_size_mb: usize,
 
+    /// Number of blocks per batch during initial sync (bitcoind fetch mode).
+    /// Larger batches keep more O rows in the write buffer when index() runs lookup_txos(),
+    /// improving cache hit rate for outputs spent within the same batch window.
+    /// Must stay within db_write_buffer_size_mb to avoid mid-batch flushes.
+    pub initial_sync_batch_size: usize,
+
     #[cfg(feature = "liquid")]
     pub parent_network: BNetwork,
     #[cfg(feature = "liquid")]
@@ -244,6 +250,12 @@ impl Config {
                     .help("RocksDB write buffer size in MB per database. RAM usage = size * max_write_buffers(2) * 3_databases")
                     .takes_value(true)
                     .default_value("256")
+             ).arg(
+                Arg::with_name("initial_sync_batch_size")
+                    .long("initial-sync-batch-size")
+                    .help("Number of blocks per batch during initial sync. Larger values keep more txo rows in the write buffer during indexing, improving lookup_txos cache hit rate for recently-created outputs.")
+                    .takes_value(true)
+                    .default_value("250")
              ).arg(
                 Arg::with_name("zmq_addr")
                     .long("zmq-addr")
@@ -483,6 +495,7 @@ impl Config {
             db_block_cache_mb: value_t_or_exit!(m, "db_block_cache_mb", usize),
             db_parallelism: value_t_or_exit!(m, "db_parallelism", usize),
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
+            initial_sync_batch_size: value_t_or_exit!(m, "initial_sync_batch_size", usize),
             zmq_addr,
 
             #[cfg(feature = "liquid")]
