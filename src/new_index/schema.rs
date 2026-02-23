@@ -205,6 +205,7 @@ struct IndexerConfig {
     address_search: bool,
     index_unspendables: bool,
     network: Network,
+    block_batch_size: usize,
     #[cfg(feature = "liquid")]
     parent_network: crate::chain::BNetwork,
 }
@@ -216,6 +217,7 @@ impl From<&Config> for IndexerConfig {
             address_search: config.address_search,
             index_unspendables: config.index_unspendables,
             network: config.network_type,
+            block_batch_size: config.initial_sync_batch_size,
             #[cfg(feature = "liquid")]
             parent_network: config.parent_network,
         }
@@ -322,7 +324,7 @@ impl Indexer {
 
             // Fetch the reorged blocks, then undo their history index db rows.
             // The txstore db rows are kept for reorged blocks/transactions.
-            start_fetcher(self.from, &daemon, reorged_headers)?
+            start_fetcher(self.from, &daemon, reorged_headers, self.iconfig.block_batch_size)?
                 .map(|blocks| self.undo_index(&blocks));
         }
 
@@ -351,7 +353,7 @@ impl Indexer {
         let mut blocks_fetched = 0;
         let to_process_total = to_process.len();
 
-        start_fetcher(self.from, &daemon, to_process)?.map(|blocks| {
+        start_fetcher(self.from, &daemon, to_process, self.iconfig.block_batch_size)?.map(|blocks| {
             if fetcher_count % 25 == 0 && to_process_total > 20 {
                 info!(
                     "processing blocks {}/{} ({:.1}%)",
@@ -1929,6 +1931,7 @@ pub mod bench {
                 address_search: false,
                 index_unspendables: false,
                 network: crate::chain::Network::Regtest,
+                block_batch_size: 250,
             };
             let height = 702861;
             let hash = block.block_hash();
