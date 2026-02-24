@@ -1215,15 +1215,15 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
     block_entries
         .par_iter() // serialization is CPU-intensive
         .map(|b| {
+            assert_eq!(b.txids.len(), b.block.txdata.len());
             let mut rows = vec![];
             let blockhash = full_hash(&b.entry.hash()[..]);
-            let txids: Vec<Txid> = b.block.txdata.iter().map(|tx| tx.compute_txid()).collect();
-            for (tx, txid) in b.block.txdata.iter().zip(txids.iter()) {
+            for (tx, txid) in b.block.txdata.iter().zip(b.txids.iter()) {
                 add_transaction(*txid, tx, &mut rows, iconfig);
             }
 
             if !iconfig.light_mode {
-                rows.push(BlockRow::new_txids(blockhash, &txids).into_row());
+                rows.push(BlockRow::new_txids(blockhash, &b.txids).into_row());
                 rows.push(BlockRow::new_meta(blockhash, &BlockMeta::from(b)).into_row());
             }
 
@@ -1313,10 +1313,12 @@ fn index_blocks(
     block_entries
         .par_iter() // serialization is CPU-intensive
         .map(|b| {
+            assert_eq!(b.txids.len(), b.block.txdata.len());
             let mut rows = vec![];
-            for tx in &b.block.txdata {
-                let height = b.entry.height() as u32;
-                index_transaction(tx, height, previous_txos_map, &mut rows, iconfig);
+            let height = b.entry.height() as u32;
+            for (tx, txid) in b.block.txdata.iter().zip(b.txids.iter()) {
+                let txid_hash = full_hash(&txid[..]);
+                index_transaction(tx, txid_hash, height, previous_txos_map, &mut rows, iconfig);
             }
             rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row()); // mark block as "indexed"
             rows
@@ -1328,12 +1330,12 @@ fn index_blocks(
 // TODO: return an iterator?
 fn index_transaction(
     tx: &Transaction,
+    txid: FullHash,
     confirmed_height: u32,
     previous_txos_map: &HashMap<OutPoint, TxOut>,
     rows: &mut Vec<DBRow>,
     iconfig: &IndexerConfig,
 ) {
-    let txid = full_hash(&tx.compute_txid()[..]);
 
     // persist tx confirmation row:
     //      C{txid} → "{block_height}"
@@ -1936,7 +1938,9 @@ pub mod bench {
             let height = 702861;
             let hash = block.block_hash();
             let header = block.header.clone();
+            let txids = block.txdata.iter().map(|tx| tx.compute_txid()).collect();
             let block_entry = BlockEntry {
+                txids,
                 block,
                 entry: HeaderEntry::new(height, hash, header),
                 size: 0u32, // wrong but not needed for benching

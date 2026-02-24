@@ -16,7 +16,7 @@ use std::thread;
 
 use electrs_macros::trace;
 
-use crate::chain::{Block, BlockHash};
+use crate::chain::{Block, BlockHash, Txid};
 use crate::daemon::Daemon;
 use crate::errors::*;
 use crate::util::{spawn_thread, HeaderEntry, SyncChannel};
@@ -45,6 +45,8 @@ pub struct BlockEntry {
     pub block: Block,
     pub entry: HeaderEntry,
     pub size: u32,
+    /// Pre-computed txids, must always correspond 1:1 with block.txdata
+    pub txids: Vec<Txid>,
 }
 
 type SizedBlock = (Block, u32);
@@ -107,10 +109,14 @@ fn bitcoind_fetcher(
                 let block_entries: Vec<BlockEntry> = blocks
                     .into_iter()
                     .zip(entries)
-                    .map(|(block, entry)| BlockEntry {
-                        entry: entry.clone(), // TODO: remove this clone()
-                        size: block.total_size() as u32,
-                        block,
+                    .map(|(block, entry)| {
+                        let txids = block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+                        BlockEntry {
+                            entry: entry.clone(), // TODO: remove this clone()
+                            size: block.total_size() as u32,
+                            txids,
+                            block,
+                        }
                     })
                     .collect();
                 assert_eq!(block_entries.len(), entries.len());
@@ -157,7 +163,10 @@ fn blkfiles_fetcher(
                         let blockhash = block.block_hash();
                         entry_map
                             .remove(&blockhash)
-                            .map(|entry| BlockEntry { block, entry, size })
+                            .map(|entry| {
+                                let txids = block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+                                BlockEntry { block, entry, size, txids }
+                            })
                             .or_else(|| {
                                 trace!("skipping block {}", blockhash);
                                 None
