@@ -16,16 +16,16 @@ pub mod common;
 
 use common::Result;
 
-fn get(rest_addr: net::SocketAddr, path: &str) -> std::result::Result<ureq::Response, ureq::Error> {
-    ureq::get(&format!("http://{}{}", rest_addr, path)).call()
+fn get(rest_addr: net::SocketAddr, path: &str) -> std::result::Result<ureq::Body, ureq::Error> {
+    Ok(ureq::get(&format!("http://{}{}", rest_addr, path)).call()?.into_body())
 }
 
 fn get_json(rest_addr: net::SocketAddr, path: &str) -> Result<Value> {
-    Ok(get(rest_addr, path)?.into_body().read_json()?)
+    Ok(get(rest_addr, path)?.read_json()?)
 }
 
 fn get_plain(rest_addr: net::SocketAddr, path: &str) -> Result<String> {
-    Ok(get(rest_addr, path)?.into_body().read_to_string()?)
+    Ok(get(rest_addr, path)?.read_to_string()?)
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn test_rest_block_status() -> Result<()> {
     let blockhash1 = tester.mine()?;
     let blockhash2 = tester.mine()?; // tip
 
-    let block_count = tester.node_client().get_block_count()?;
+    let block_count = tester.get_block_count()?;
 
     // Non-tip block should have next_best pointing to next block
     let res = get_json(rest_addr, &format!("/block/{}/status", blockhash1))?;
@@ -829,7 +829,7 @@ fn test_rest_reorg() -> Result<()> {
         )
     };
 
-    let init_height = tester.node_client().get_block_count()?;
+    let init_height = tester.get_block_count()?;
 
     let address = tester.newaddress()?;
     let miner_address = tester.newaddress()?;

@@ -13,6 +13,9 @@ use electrs::electrum::RPC as ElectrumRPC;
 #[cfg(not(feature = "liquid"))]
 use bitcoin::address;
 
+#[cfg(feature = "liquid")]
+use elementsd::bitcoincore_rpc::RpcApi;
+
 struct WalletTester {
     electrum_server: ElectrumRPC,
     electrum_wallet: ElectrumD,
@@ -49,6 +52,7 @@ impl WalletTester {
     fn notify_wallet(&self) {
         self.electrum_server.notify();
         std::thread::sleep(std::time::Duration::from_millis(200));
+        self.electrum_wallet.call("wait_for_sync", &json!([])).unwrap();
     }
 
     fn assert_balance(&self, confirmed: f64, unconfirmed: f64) {

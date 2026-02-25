@@ -298,13 +298,54 @@ impl TestRunner {
 
 // Make the RpcApi methods available directly on TestRunner,
 // without having to go through the node_client() getter
-impl bitcoincore_rpc::RpcApi for TestRunner {
+#[cfg(feature = "liquid")]
+impl nclient::RpcApi for TestRunner {
     fn call<T: for<'a> serde::de::Deserialize<'a>>(
         &self,
         cmd: &str,
         args: &[serde_json::Value],
-    ) -> bitcoincore_rpc::Result<T> {
+    ) -> nclient::Result<T> {
         self.node_client().call(cmd, args)
+    }
+}
+
+// For non-liquid (corepc-node), expose the methods used by the tests as inherent methods.
+#[cfg(not(feature = "liquid"))]
+impl TestRunner {
+    pub fn call<T: for<'a> serde::de::Deserialize<'a>>(
+        &self,
+        cmd: &str,
+        args: &[serde_json::Value],
+    ) -> Result<T> {
+        Ok(self.node_client().call(cmd, args)?)
+    }
+
+    pub fn get_raw_transaction(
+        &self,
+        txid: &Txid,
+        _block_hash: Option<&BlockHash>,
+    ) -> Result<bitcoin::Transaction> {
+        use bitcoin::hex::FromHex;
+        let hex: String = self.call("getrawtransaction", &[txid.to_string().into()])?;
+        let bytes = Vec::<u8>::from_hex(&hex).map_err(|e| e.to_string())?;
+        bitcoin::consensus::deserialize(&bytes).map_err(|e| e.to_string().into())
+    }
+
+    pub fn invalidate_block(&self, hash: &BlockHash) -> Result<()> {
+        self.call("invalidateblock", &[hash.to_string().into()])
+    }
+
+    pub fn generate_to_address(&self, n: u64, addr: &Address) -> Result<Vec<BlockHash>> {
+        let raw: Vec<String> =
+            self.call("generatetoaddress", &[n.into(), addr.to_string().into()])?;
+        raw.iter()
+            .map(|s| s.parse().map_err(|e: bitcoin::hashes::hex::HexToArrayError| e.to_string().into()))
+            .collect()
+    }
+
+    pub fn get_block_hash(&self, height: u64) -> Result<BlockHash> {
+        let s: String = self.call("getblockhash", &[height.into()])?;
+        s.parse().map_err(|e: bitcoin::hashes::hex::HexToArrayError| e.to_string().into())
     }
 }
 
