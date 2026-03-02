@@ -44,7 +44,7 @@ pub struct Config {
     pub zmq_addr: Option<SocketAddr>,
 
     /// RocksDB block cache size in MB (per database)
-    /// Caches decompressed blocks in memory to avoid repeated decompression (CPU intensive)
+    /// Caches decompressed data blocks, plus index and filter blocks (via cache_index_and_filter_blocks).
     /// Total memory usage = cache_size * 3_databases (txstore, history, cache)
     /// Recommendation: 1024 MB for steady-state; 4096 MB+ for initial sync (L0 SST
     /// files accumulate up to the compaction trigger — their index, filter (Bloom),
@@ -229,7 +229,7 @@ impl Config {
             ).arg(
                 Arg::with_name("db_block_cache_mb")
                     .long("db-block-cache-mb")
-                    .help("RocksDB block cache size in MB per database")
+                    .help("RocksDB block cache size in MB per database. Bounds index/filter block memory; use 4096+ for initial sync to avoid table-reader heap growth.")
                     .takes_value(true)
                     .default_value("8")
             ).arg(
