@@ -94,7 +94,7 @@ impl DB {
         db_opts.create_if_missing(true);
         db_opts.set_max_open_files(100_000); // TODO: make sure to `ulimit -n` this process correctly
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
-        db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
+        db_opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         db_opts.set_target_file_size_base(1_073_741_824);
         db_opts.set_disable_auto_compactions(!config.initial_sync_compaction); // for initial bulk load
         if !config.initial_sync_compaction {
@@ -149,6 +149,12 @@ impl DB {
         // Note: increase --db-block-cache-mb proportionally (e.g. 4096) so the cache is
         // large enough to hold the working set of filter/index blocks without thrashing.
         block_opts.set_cache_index_and_filter_blocks(true);
+        // Pin L0 index and filter blocks in the cache so they are never evicted.
+        // Without this, data block churn evicts L0 index/filter blocks, causing
+        // repeated disk reads for every SST lookup — worse than the old heap approach.
+        // With this, L0 index/filter blocks behave like the old table-reader heap
+        // allocation but stay within the bounded block cache.
+        block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
 
         db_opts.set_block_based_table_factory(&block_opts);
 
