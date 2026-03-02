@@ -53,12 +53,13 @@ pub struct Config {
     pub initial_sync_compaction: bool,
 
     /// RocksDB block cache size in MB (per database)
-    /// Caches decompressed blocks in memory to avoid repeated decompression (CPU intensive)
+    /// Caches decompressed data blocks, plus index and filter blocks (via cache_index_and_filter_blocks).
     /// Total memory usage = cache_size * 3_databases (txstore, history, cache)
-    /// Recommendation: 1024MB for steady-state; 4096MB+ for initial sync (L0 SST files
-    /// accumulate up to the compaction trigger — their index, filter (Bloom), and data blocks
-    /// must fit in this cache). Bloom filters add ~1.25 MB per SST file at 10 bits/key, so
-    /// 64 L0 files need ~80 MB of filter blocks on top of index blocks.
+    /// Recommendation: 1024 MB for steady-state; 4096 MB+ for initial sync (L0 SST
+    /// files accumulate up to the compaction trigger — their index, filter (Bloom),
+    /// and data blocks must fit in this cache). With 10 bits/key bloom filters and
+    /// a 512 MB write buffer, each L0 file's filter block is ~9.75 MB, so 64 L0
+    /// files need ~625 MB of filter blocks on top of index blocks.
     pub db_block_cache_mb: usize,
 
     /// RocksDB parallelism level (background compaction and flush threads)
@@ -241,7 +242,7 @@ impl Config {
             ).arg(
                 Arg::with_name("db_block_cache_mb")
                     .long("db-block-cache-mb")
-                    .help("RocksDB block cache size in MB per database")
+                    .help("RocksDB block cache size in MB per database. Bounds index/filter block memory; use 4096+ for initial sync to avoid table-reader heap growth.")
                     .takes_value(true)
                     .default_value("8")
             ).arg(
