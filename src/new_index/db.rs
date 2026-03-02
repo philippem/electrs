@@ -134,6 +134,15 @@ impl DB {
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache_size_bytes = config.db_block_cache_mb * 1024 * 1024;
         block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(cache_size_bytes));
+        // Store index and filter blocks inside the block cache so their memory is
+        // bounded by --db-block-cache-mb. Without this, RocksDB allocates table-reader
+        // memory (index + filter blocks) on the heap separately for every open SST file.
+        // During initial sync, L0 files accumulate up to the compaction trigger (64 by
+        // default) and this unbounded heap allocation can grow to many GB.
+        // Note: increase --db-block-cache-mb proportionally (e.g. 4096) so the cache is
+        // large enough to hold the working set of filter/index blocks without thrashing.
+        block_opts.set_cache_index_and_filter_blocks(true);
+
         db_opts.set_block_based_table_factory(&block_opts);
 
         let db = DB {
