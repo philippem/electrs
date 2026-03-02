@@ -37,6 +37,16 @@ impl Waiter {
         }
     }
 
+    /// Non-blocking check: returns the signal number if SIGINT/SIGTERM is pending, else None.
+    /// Used to check for shutdown requests between indexing batches without blocking.
+    pub fn interrupted(&self) -> Option<i32> {
+        match self.receiver.try_recv() {
+            Ok(sig) if sig == SIGUSR1 => None, // just a block notification, not a shutdown signal
+            Ok(sig) => Some(sig),
+            Err(_) => None,
+        }
+    }
+
     pub fn wait(&self, duration: Duration, accept_block_notification: bool) -> Result<()> {
         let start = Instant::now();
         select! {

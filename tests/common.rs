@@ -158,7 +158,7 @@ impl TestRunner {
             FetchFrom::Bitcoind
         };
 
-        let mut indexer = Indexer::open(Arc::clone(&store), fetch_from, &config, &metrics);
+        let mut indexer = Indexer::open(Arc::clone(&store), fetch_from, &config, &metrics, signal.clone());
         let tip = indexer.update(&daemon)?;
         indexer.fetch_from(FetchFrom::Bitcoind);
 

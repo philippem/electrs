@@ -69,6 +69,20 @@ impl<T> Fetcher<T> {
         }
         self.thread.join().expect("fetcher thread panicked")
     }
+
+    /// Like `map`, but the closure may return `Err` to stop iteration early (e.g. on shutdown).
+    /// The producer thread will observe a disconnected channel and exit cleanly.
+    pub fn try_map<F>(self, mut func: F) -> crate::errors::Result<()>
+    where
+        F: FnMut(T) -> crate::errors::Result<()>,
+    {
+        let Fetcher { receiver, thread } = self;
+        for item in receiver {
+            func(item)?;
+        }
+        thread.join().expect("fetcher thread panicked");
+        Ok(())
+    }
 }
 
 #[trace]
@@ -119,9 +133,9 @@ fn bitcoind_fetcher(
                     })
                     .collect();
                 assert_eq!(block_entries.len(), entries.len());
-                sender
-                    .send(block_entries)
-                    .expect("failed to send fetched blocks");
+                if sender.send(block_entries).is_err() {
+                    return; // receiver dropped (shutdown)
+                }
                 log::debug!("last fetch {:?}", entries.last());
             }
         }),
@@ -175,9 +189,9 @@ fn blkfiles_fetcher(
                     })
                     .collect();
                 trace!("fetched {} blocks", block_entries.len());
-                sender
-                    .send(block_entries)
-                    .expect("failed to send blocks entries from blk*.dat files");
+                if sender.send(block_entries).is_err() {
+                    return; // receiver dropped (shutdown)
+                }
             });
             if !entry_map.is_empty() {
                 panic!(
@@ -213,9 +227,9 @@ fn blkfiles_reader(blk_files: Vec<PathBuf>, xor_key: Option<[u8; 8]>) -> Fetcher
                 if let Some(xor_key) = xor_key {
                     blkfile_apply_xor_key(xor_key, &mut blob);
                 }
-                sender
-                    .send(blob)
-                    .unwrap_or_else(|_| panic!("failed to send {:?} contents", path));
+                if sender.send(blob).is_err() {
+                    return; // receiver dropped (shutdown)
+                }
             }
         }),
     )
@@ -246,9 +260,9 @@ fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBloc
             blobs.map(|blob| {
                 trace!("parsing {} bytes", blob.len());
                 let blocks = parse_blocks(&pool, blob, magic).expect("failed to parse blk*.dat file");
-                sender
-                    .send(blocks)
-                    .expect("failed to send blocks from blk*.dat file");
+                if sender.send(blocks).is_err() {
+                    return; // receiver dropped (shutdown)
+                }
             });
         }),
     )

@@ -74,6 +74,7 @@ fn run_server(config: Arc<Config>, salt_rwlock: Arc<RwLock<String>>) -> Result<(
         fetch_from(&config, &store),
         &config,
         &metrics,
+        signal.clone(),
     );
     let mut tip = indexer.update(&daemon)?;
 

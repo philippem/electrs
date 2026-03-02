@@ -22,6 +22,7 @@ fn main() {
     };
 
     let signal = Waiter::start(crossbeam_channel::never());
+    let indexer_signal = signal.clone();
     let config = Config::from_args();
     let metrics = Metrics::new(config.monitoring_addr);
     let store = Arc::new(Store::open(&config, &metrics, true));
@@ -45,7 +46,7 @@ fn main() {
 
     let chain = ChainQuery::new(Arc::clone(&store), Arc::clone(&daemon), &config, &metrics);
 
-    let mut indexer = Indexer::open(Arc::clone(&store), FetchFrom::Bitcoind, &config, &metrics);
+    let mut indexer = Indexer::open(Arc::clone(&store), FetchFrom::Bitcoind, &config, &metrics, indexer_signal);
     indexer.update(&daemon).unwrap();
 
     let mut iter = store.txstore_db().raw_iterator();

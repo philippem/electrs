@@ -35,6 +35,7 @@ use crate::util::{
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
 use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
+use crate::signal::Waiter;
 
 #[cfg(feature = "liquid")]
 use crate::elements::{asset, ebcompact::TxidCompat, peg};
@@ -198,6 +199,7 @@ pub struct Indexer {
     iconfig: IndexerConfig,
     duration: HistogramVec,
     tip_metric: Gauge,
+    signal: Waiter,
 }
 
 struct IndexerConfig {
@@ -234,7 +236,7 @@ pub struct ChainQuery {
 
 // TODO: &[Block] should be an iterator / a queue.
 impl Indexer {
-    pub fn open(store: Arc<Store>, from: FetchFrom, config: &Config, metrics: &Metrics) -> Self {
+    pub fn open(store: Arc<Store>, from: FetchFrom, config: &Config, metrics: &Metrics, signal: Waiter) -> Self {
         Indexer {
             store,
             flush: DBFlush::Disable,
@@ -245,6 +247,7 @@ impl Indexer {
                 &["step"],
             ),
             tip_metric: metrics.gauge(MetricOpts::new("tip_height", "Current chain tip height")),
+            signal,
         }
     }
 
@@ -371,7 +374,11 @@ impl Indexer {
         let mut blocks_fetched = 0;
         let to_process_total = to_process.len();
 
-        start_fetcher(self.from, &daemon, to_process, self.iconfig.block_batch_size)?.map(|blocks| {
+        start_fetcher(self.from, &daemon, to_process, self.iconfig.block_batch_size)?.try_map(|blocks| {
+            if let Some(sig) = self.signal.interrupted() {
+                bail!(ErrorKind::Interrupt(sig));
+            }
+
             if fetcher_count % 25 == 0 && to_process_total > 20 {
                 info!(
                     "processing blocks {}/{} ({:.1}%)",
@@ -408,7 +415,9 @@ impl Indexer {
             if !to_index.is_empty() {
                 self.index(&to_index);
             }
-        });
+
+            Ok(())
+        })?;
 
         // Compact after all add+index work is done, not between passes.
         self.start_auto_compactions(&self.store.txstore_db);
