@@ -93,7 +93,8 @@ impl DB {
         db_opts.create_if_missing(true);
         db_opts.set_max_open_files(100_000); // TODO: make sure to `ulimit -n` this process correctly
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
-        db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
+        db_opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        db_opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
         db_opts.set_target_file_size_base(1_073_741_824);
         // Bulk-load compaction: allow L0 files to accumulate to a bounded limit
         // before compacting. This reduces write amplification compared to the
