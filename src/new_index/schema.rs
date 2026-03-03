@@ -532,8 +532,11 @@ impl ChainQuery {
         hash: &BlockHash,
         start_index: usize,
         limit: usize,
-    ) -> Result<Vec<Transaction>> {
-        let txids = self.get_block_txids(hash).chain_err(|| "block not found")?;
+    ) -> Result<Option<Vec<Transaction>>> {
+        let txids = match self.get_block_txids(hash) {
+            None => return Ok(None),
+            Some(txids) => txids,
+        };
         ensure!(start_index < txids.len(), "start index out of range");
 
         let txids_with_blockhash = txids
@@ -543,7 +546,7 @@ impl ChainQuery {
             .map(|txid| (txid, *hash))
             .collect::<Vec<_>>();
 
-        self.lookup_txns(&txids_with_blockhash)
+        self.lookup_txns(&txids_with_blockhash).map(Some)
 
         // XXX use getblock in lightmode? a single RPC call, but would fetch all txs to get one page
         // self.daemon.getblock(hash)?.txdata.into_iter().skip(start_index).take(limit).collect()

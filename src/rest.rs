@@ -796,6 +796,7 @@ fn handle_request(
             let txs = query
                 .chain()
                 .get_block_txs(&hash, start_index, CHAIN_TXS_PER_PAGE)?
+                .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?
                 .into_iter()
                 .map(|tx| (tx, blockid))
                 .collect();
