@@ -347,6 +347,24 @@ fn test_rest_block() -> Result<()> {
 }
 
 #[test]
+fn test_rest_block_txs_not_found() -> Result<()> {
+    let (rest_handle, rest_addr, _tester) = common::init_rest_tester().unwrap();
+
+    // A well-formed hash that doesn't correspond to any real block
+    let nonexistent = "0000000000000000000000000000000000000000000000000000000000000001";
+
+    // Should return 404, not 400 — this demonstrates the bug
+    let resp = get(rest_addr, &format!("/block/{}/txs/0", nonexistent))
+        .unwrap_err()
+        .into_response()
+        .unwrap();
+    assert_eq!(resp.status(), 404, "nonexistent block hash should return 404");
+
+    rest_handle.stop();
+    Ok(())
+}
+
+#[test]
 fn test_rest_mempool() -> Result<()> {
     let (rest_handle, rest_addr, mut tester) = common::init_rest_tester().unwrap();
 
