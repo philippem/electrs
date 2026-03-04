@@ -95,7 +95,27 @@ impl DB {
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
         db_opts.set_target_file_size_base(1_073_741_824);
-        db_opts.set_disable_auto_compactions(!config.initial_sync_compaction); // for initial bulk load
+        // Bulk-load compaction: allow L0 files to accumulate to a bounded limit
+        // before compacting. This reduces write amplification compared to the
+        // default trigger of 4, while keeping the file count — and therefore
+        // bloom-filter memory and lookup cost — bounded.
+        //
+        // With bloom filters at 10 bits/key and a 512 MB write buffer, each L0
+        // file has ~7.8 M keys, so its filter block is ~9.75 MB. At 64 files
+        // that is ~625 MB of pinned filter blocks — well within an 8 GB cache.
+        // Each lookup checks 64 bloom filters (fast, in-memory) and reads from
+        // only ~0.64 files on average (1 % false-positive rate × 64 files).
+        //
+        // Set slowdown/stop triggers well above the compaction trigger so writes
+        // are never stalled while background compaction catches up.
+        // Disable the pending-compaction-bytes stall so the large backlog that
+        // builds up during the bulk load does not block writes.
+        const L0_BULK_TRIGGER: i32 = 64;
+        db_opts.set_level_zero_file_num_compaction_trigger(L0_BULK_TRIGGER);
+        db_opts.set_level_zero_slowdown_writes_trigger(L0_BULK_TRIGGER * 4);
+        db_opts.set_level_zero_stop_writes_trigger(L0_BULK_TRIGGER * 8);
+        db_opts.set_hard_pending_compaction_bytes_limit(0);
+        db_opts.set_soft_pending_compaction_bytes_limit(0);
 
 
         let parallelism: i32 = config.db_parallelism.try_into()
@@ -133,7 +153,23 @@ impl DB {
     }
 
     pub fn enable_auto_compaction(&self) {
-        let opts = [("disable_auto_compactions", "false")];
+       // Reset L0 triggers and pending-compaction stall thresholds to RocksDB
+       // defaults, so that steady-state operation compacts promptly and avoids
+       // unbounded compaction backlogs that cause read latency spikes.
+       // RocksDB defaults (stable since v5.x through v10.4.2). Hardcoded because
+       // set_options() doesn't return previous values and the Rust bindings lack getters.
+
+        let soft_limit = (64u64 << 30).to_string(); // 64 GiB
+        let hard_limit = (256u64 << 30).to_string(); // 256 GiB
+
+        let opts = [
+            ("disable_auto_compactions", "false"),
+            ("level0_file_num_compaction_trigger", "4"),
+            ("level0_slowdown_writes_trigger", "20"),
+            ("level0_stop_writes_trigger", "36"),
+            ("soft_pending_compaction_bytes_limit", &soft_limit),
+            ("hard_pending_compaction_bytes_limit", &hard_limit),
+        ];
         self.db.set_options(&opts).unwrap();
     }
 
