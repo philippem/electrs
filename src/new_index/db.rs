@@ -156,6 +156,21 @@ impl DB {
         // Note: increase --db-block-cache-mb proportionally (e.g. 4096) so the cache is
         // large enough to hold the working set of filter/index blocks without thrashing.
         block_opts.set_cache_index_and_filter_blocks(true);
+        // Pin L0 index and filter blocks in the cache so they are never evicted.
+        // Without this, data block churn evicts L0 index/filter blocks, causing
+        // repeated disk reads for every SST lookup — worse than the old heap approach.
+        // With this, L0 index/filter blocks behave like the old table-reader heap
+        // allocation but stay within the bounded block cache.
+        block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        // Full-key Bloom filters allow multi_get() to skip SST files that don't
+        // contain a key without touching the index or data blocks. Without this,
+        // every point lookup must binary-search the index of every L0 file whose
+        // key range overlaps the query (all of them for random txids) — extremely
+        // expensive with 1000+ L0 files accumulated during initial sync.
+        // At 10 bits/key the false-positive rate is ~1%, so only ~10 out of 1000
+        // L0 files need actual I/O per key. The filter blocks are cached and pinned
+        // alongside the index blocks via the settings above.
+        block_opts.set_bloom_filter(10.0, false);
 
         db_opts.set_block_based_table_factory(&block_opts);
 
