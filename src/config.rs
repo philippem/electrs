@@ -43,17 +43,23 @@ pub struct Config {
     pub rpc_logging: RpcLogging,
     pub zmq_addr: Option<SocketAddr>,
 
-    /// Enable compaction during initial sync
+    /// Use tight compaction during initial sync (L0 trigger = 4, RocksDB default).
     ///
-    /// By default compaction is off until initial sync is finished for performance reasons,
-    /// however, this requires much more disk space.
+    /// By default, a bulk-load compaction mode is used: L0 files accumulate up to 64
+    /// before triggering a compaction. This bounds bloom-filter memory (~625 MB) and
+    /// lookup cost while reducing write amplification versus the default trigger of 4.
+    /// Enable this flag only if you want the lowest possible L0 file count at the cost
+    /// of higher write amplification and more background I/O during initial sync.
     pub initial_sync_compaction: bool,
 
     /// RocksDB block cache size in MB (per database)
     /// Caches decompressed data blocks, plus index and filter blocks (via cache_index_and_filter_blocks).
     /// Total memory usage = cache_size * 3_databases (txstore, history, cache)
     /// Recommendation: 1024MB for steady-state; 4096MB+ for initial sync (many L0 SST files
-    /// accumulate with compaction disabled — their index/filter blocks must fit in this cache).
+    /// accumulate with compaction disabled — their index, filter (Bloom), and data blocks must
+    /// fit in this cache). Bloom filters add ~1.25 MB per SST file at 10 bits/key, so 1000 L0
+    /// files need ~1.25 GB extra on top of index blocks. 8192MB is a safe ceiling per-DB
+    /// on machines with 32 GB+ RAM, giving ~24 GB total for 3 DBs.
     pub db_block_cache_mb: usize,
 
     /// RocksDB parallelism level (background compaction and flush threads)
@@ -238,7 +244,7 @@ impl Config {
             ).arg(
                 Arg::with_name("initial_sync_compaction")
                     .long("initial-sync-compaction")
-                    .help("Perform compaction during initial sync (slower but less disk space required)")
+                    .help("Use tight compaction during initial sync (L0 trigger=4). Default is bulk-load mode (L0 trigger=64) which reduces write amplification while keeping bloom-filter memory bounded.")
             ).arg(
                 Arg::with_name("db_block_cache_mb")
                     .long("db-block-cache-mb")
