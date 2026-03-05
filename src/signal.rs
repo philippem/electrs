@@ -14,13 +14,32 @@ pub struct Waiter {
 }
 
 fn notify(signals: &[i32]) -> channel::Receiver<i32> {
-    let (s, r) = channel::bounded(1);
-    let mut signals =
+    // Buffer of 2: room for one SIGUSR1 block-notification and one shutdown signal
+    // to coexist without dropping either.
+    let (s, r) = channel::bounded(2);
+    let mut sigs =
         signal_hook::iterator::Signals::new(signals).expect("failed to register signal hook");
     thread::spawn(move || {
-        for signal in signals.forever() {
-            s.send(signal)
-                .unwrap_or_else(|_| panic!("failed to send signal {}", signal));
+        let mut shutdown_count = 0u32;
+        for sig in sigs.forever() {
+            if sig == SIGUSR1 {
+                let _ = s.try_send(sig); // fire-and-forget block notification
+                continue;
+            }
+            shutdown_count += 1;
+            if shutdown_count >= 2 {
+                // Second shutdown signal: exit immediately without waiting for
+                // the current indexing batch to finish. Safe because initial-sync
+                // writes are WAL-less and idempotent — the incomplete batch will
+                // simply be redone on next startup.
+                eprintln!("second signal ({}), exiting immediately", sig);
+                std::process::exit(128 + sig);
+            }
+            eprintln!(
+                "signal ({}), shutting down gracefully — send again to exit immediately",
+                sig
+            );
+            let _ = s.try_send(sig);
         }
     });
     r
