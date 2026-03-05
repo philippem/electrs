@@ -138,7 +138,9 @@ fn blkfiles_fetcher(
     let blk_files = daemon.list_blk_files()?;
     let xor_key = daemon.read_blk_file_xor_key()?;
 
-    let chan = SyncChannel::new(1);
+    // Buffer of 2 lets the parser produce one batch ahead of the consumer,
+    // overlapping block-entry construction with the indexer.
+    let chan = SyncChannel::new(2);
     let sender = chan.sender();
 
     let mut entry_map: HashMap<BlockHash, HeaderEntry> =
@@ -190,7 +192,9 @@ fn blkfiles_fetcher(
 
 #[trace]
 fn blkfiles_reader(blk_files: Vec<PathBuf>, xor_key: Option<[u8; 8]>) -> Fetcher<Vec<u8>> {
-    let chan = SyncChannel::new(1);
+    // Buffer of 2 lets the reader read ahead by one blk file while the parser
+    // is working, overlapping sequential disk I/O with CPU deserialization.
+    let chan = SyncChannel::new(2);
     let sender = chan.sender();
 
     Fetcher::from(
@@ -228,7 +232,8 @@ fn blkfile_apply_xor_key(xor_key: [u8; 8], blob: &mut [u8]) {
 
 #[trace]
 fn blkfiles_parser(blobs: Fetcher<Vec<u8>>, magic: u32) -> Fetcher<Vec<SizedBlock>> {
-    let chan = SyncChannel::new(1);
+    // Buffer of 2 lets the parser stay one batch ahead of the fetcher stage.
+    let chan = SyncChannel::new(2);
     let sender = chan.sender();
 
     Fetcher::from(
