@@ -49,6 +49,7 @@ pub struct RocksDbMetrics {
 
     // Level metrics
     pub base_level: GaugeVec,
+    pub num_files_at_level: GaugeVec,
 
     // Write metrics
     pub actual_delayed_write_rate: GaugeVec,
@@ -204,6 +205,10 @@ impl RocksDbMetrics {
                 format!("rocksdb_base_level"),
                 "Base level for compaction."
             ), labels),
+            num_files_at_level: metrics.gauge_vec(MetricOpts::new(
+                "rocksdb_num_files_at_level",
+                "Number of SST files at each compaction level."
+            ), &["db", "level"]),
 
             // Write metrics
             actual_delayed_write_rate: metrics.gauge_vec(MetricOpts::new(
