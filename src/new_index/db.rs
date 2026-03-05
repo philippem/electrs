@@ -165,8 +165,12 @@ impl DB {
 
     pub fn full_compaction(&self) {
         info!("starting full compaction on {:?}", self.db);
-        self.db.compact_range(None::<&[u8]>, None::<&[u8]>);
-        info!("finished full compaction on {:?}", self.db);
+        let start = std::time::Instant::now();
+        let mut opts = rocksdb::CompactOptions::default();
+        opts.set_bottommost_level_compaction(rocksdb::BottommostLevelCompaction::Force);
+        self.db.compact_range_opt(None::<&[u8]>, None::<&[u8]>, &opts);
+        let elapsed = start.elapsed();
+        info!("finished full compaction on {:?} in elapsed='{:.1?}'", self.db, elapsed);
     }
 
     pub fn enable_auto_compaction(&self) {
