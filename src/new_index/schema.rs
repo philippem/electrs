@@ -374,9 +374,6 @@ impl Indexer {
                     .cloned()
                     .collect()
             };
-            if !to_add.is_empty() {
-                self.add(&to_add);
-            }
 
             // Index blocks not yet in history (O rows for to_add are now in the write buffer)
             let to_index: Vec<_> = {
@@ -387,8 +384,15 @@ impl Indexer {
                     .cloned()
                     .collect()
             };
-            if !to_index.is_empty() {
-                self.index(&to_index);
+
+            if !to_add.is_empty() || !to_index.is_empty() {
+                let _batch_timer = self.start_timer("batch_total");
+                if !to_add.is_empty() {
+                    self.add(&to_add);
+                }
+                if !to_index.is_empty() {
+                    self.index(&to_index);
+                }
             }
         });
 
