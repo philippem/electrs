@@ -199,19 +199,27 @@ impl DB {
     }
 
     pub fn raw_iterator(&self) -> rocksdb::DBRawIterator<'_> {
-        self.db.raw_iterator()
+        let mut opts = rocksdb::ReadOptions::default();
+        opts.set_total_order_seek(true);
+        self.db.raw_iterator_opt(opts)
     }
 
     pub fn iter_scan(&self, prefix: &[u8]) -> ScanIterator<'_> {
+        // full_iterator sets total_order_seek=true, ensuring correct behaviour
+        // regardless of prefix length. ScanIterator itself enforces the prefix
+        // boundary on every returned item.
         ScanIterator {
             prefix: prefix.to_vec(),
-            iter: self.db.prefix_iterator(prefix),
+            iter: self.db.full_iterator(rocksdb::IteratorMode::From(
+                prefix,
+                rocksdb::Direction::Forward,
+            )),
             done: false,
         }
     }
 
     pub fn iter_scan_from(&self, prefix: &[u8], start_at: &[u8]) -> ScanIterator<'_> {
-        let iter = self.db.iterator(rocksdb::IteratorMode::From(
+        let iter = self.db.full_iterator(rocksdb::IteratorMode::From(
             start_at,
             rocksdb::Direction::Forward,
         ));
@@ -223,7 +231,9 @@ impl DB {
     }
 
     pub fn iter_scan_reverse(&self, prefix: &[u8], prefix_max: &[u8]) -> ReverseScanIterator<'_> {
-        let mut iter = self.db.raw_iterator();
+        let mut opts = rocksdb::ReadOptions::default();
+        opts.set_total_order_seek(true);
+        let mut iter = self.db.raw_iterator_opt(opts);
         iter.seek_for_prev(prefix_max);
 
         ReverseScanIterator {
