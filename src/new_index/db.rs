@@ -128,7 +128,10 @@ impl DB {
         // Configure write buffer size (not set by increase_parallelism)
         db_opts.set_write_buffer_size(config.db_write_buffer_size_mb * 1024 * 1024);
 
-        db_opts.set_compaction_readahead_size(1 << 20);
+        // 4 MiB readahead for compaction I/O. Larger than the previous 1 MiB to better
+        // amortise syscall overhead when reading the many L0 files accumulated during
+        // initial sync.
+        db_opts.set_compaction_readahead_size(4 << 20);
 
         // Background-sync SST files to the OS incrementally as they are written,
         // rather than doing a large fsync on close. Smooths out I/O latency spikes.
