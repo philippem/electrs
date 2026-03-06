@@ -1276,18 +1276,28 @@ fn get_previous_txos(block_entries: &[BlockEntry]) -> BTreeSet<OutPoint> {
 }
 
 fn lookup_txos(txstore_db: &DB, outpoints: BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
-    let keys = outpoints.iter().map(TxOutRow::key).collect::<Vec<_>>();
-    txstore_db
-        .multi_get(keys)
-        .into_iter()
-        .zip(outpoints)
-        .map(|(res, outpoint)| {
-            let txo = res
-                .unwrap()
-                .ok_or_else(|| format!("missing txo {}", outpoint))?;
-            Ok((outpoint, deserialize(&txo).expect("failed to parse TxOut")))
+    let outpoints: Vec<OutPoint> = outpoints.into_iter().collect();
+    let chunk_size = ((outpoints.len() / rayon::current_num_threads()) + 1).max(1024);
+    outpoints
+        .par_chunks(chunk_size)
+        .map(|chunk| -> Result<HashMap<OutPoint, TxOut>> {
+            let keys: Vec<_> = chunk.iter().map(TxOutRow::key).collect();
+            txstore_db
+                .multi_get(keys)
+                .into_iter()
+                .zip(chunk)
+                .map(|(res, outpoint)| {
+                    let txo = res
+                        .unwrap()
+                        .ok_or_else(|| format!("missing txo {}", outpoint))?;
+                    Ok((*outpoint, deserialize(&txo).expect("failed to parse TxOut")))
+                })
+                .collect()
         })
-        .collect()
+        .try_reduce(|| HashMap::new(), |mut a, b| {
+            a.extend(b);
+            Ok(a)
+        })
 }
 
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
