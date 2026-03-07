@@ -48,6 +48,12 @@ impl Metrics {
         g
     }
 
+    pub fn float_gauge(&self, opts: prometheus::Opts) -> prometheus::Gauge {
+        let g = prometheus::Gauge::with_opts(opts).unwrap();
+        self.reg.register(Box::new(g.clone())).unwrap();
+        g
+    }
+
     pub fn gauge_vec(&self, opts: prometheus::Opts, labels: &[&str]) -> GaugeVec {
         let g = GaugeVec::new(opts, labels).unwrap();
         self.reg.register(Box::new(g.clone())).unwrap();
