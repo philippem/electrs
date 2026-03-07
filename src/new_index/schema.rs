@@ -198,6 +198,8 @@ pub struct Indexer {
     iconfig: IndexerConfig,
     duration: HistogramVec,
     tip_metric: Gauge,
+    sync_height: Gauge,
+    sync_progress: prometheus::Gauge,
 }
 
 struct IndexerConfig {
@@ -245,6 +247,14 @@ impl Indexer {
                 &["step"],
             ),
             tip_metric: metrics.gauge(MetricOpts::new("tip_height", "Current chain tip height")),
+            sync_height: metrics.gauge(MetricOpts::new(
+                "initial_sync_height",
+                "Height of the last block batch completed during initial sync",
+            )),
+            sync_progress: metrics.float_gauge(MetricOpts::new(
+                "initial_sync_progress_pct",
+                "Initial sync progress as a percentage of the best known chain height",
+            )),
         }
     }
 
@@ -392,6 +402,13 @@ impl Indexer {
                 }
                 if !to_index.is_empty() {
                     self.index(&to_index);
+                }
+            }
+            if let Some(last) = blocks.last() {
+                let h = last.entry.height();
+                self.sync_height.set(h as i64);
+                if chain_tip_height > 0 {
+                    self.sync_progress.set(h as f64 / chain_tip_height as f64 * 100.0);
                 }
             }
         });
