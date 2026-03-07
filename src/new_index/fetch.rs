@@ -33,9 +33,10 @@ pub fn start_fetcher(
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
     batch_size: usize,
+    chain_tip_height: usize,
 ) -> Result<Fetcher<Vec<BlockEntry>>> {
     match from {
-        FetchFrom::Bitcoind => bitcoind_fetcher(daemon, new_headers, batch_size),
+        FetchFrom::Bitcoind => bitcoind_fetcher(daemon, new_headers, batch_size, chain_tip_height),
         FetchFrom::BlkFiles => blkfiles_fetcher(daemon, new_headers),
     }
 }
@@ -77,6 +78,7 @@ fn bitcoind_fetcher(
     daemon: &Daemon,
     new_headers: Vec<HeaderEntry>,
     batch_size: usize,
+    chain_tip_height: usize,
 ) -> Result<Fetcher<Vec<BlockEntry>>> {
     if let Some(tip) = new_headers.last() {
         debug!("{:?} ({} left to index)", tip, new_headers.len());
@@ -88,18 +90,17 @@ fn bitcoind_fetcher(
         chan.into_receiver(),
         spawn_thread("bitcoind_fetcher", move || {
             let mut fetcher_count = 0;
-            let mut blocks_fetched = 0;
             let total_blocks_fetched = new_headers.len();
             for entries in new_headers.chunks(batch_size) {
                 if fetcher_count % 50 == 0 && total_blocks_fetched >= 50 {
+                    let batch_height = entries.last().map(|e| e.height()).unwrap_or(0);
                     info!("fetching blocks {}/{} ({:.1}%)",
-                        blocks_fetched,
-                        total_blocks_fetched,
-                        blocks_fetched as f32 / total_blocks_fetched as f32 * 100.0
+                        batch_height,
+                        chain_tip_height,
+                        batch_height as f32 / chain_tip_height.max(1) as f32 * 100.0
                     );
                 }
                 fetcher_count += 1;
-                blocks_fetched += entries.len();
 
                 let blockhashes: Vec<BlockHash> = entries.iter().map(|e| *e.hash()).collect();
                 let blocks = daemon

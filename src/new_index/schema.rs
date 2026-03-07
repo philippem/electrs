@@ -293,6 +293,7 @@ impl Indexer {
         let tip = daemon.getbestblockhash()?;
 
         let (new_headers, reorged_since) = self.get_new_headers(&daemon, &tip)?;
+        let chain_tip_height = new_headers.last().map(|h| h.height()).unwrap_or(0);
 
         // Handle reorgs by undoing the reorged (stale) blocks first
         if let Some(reorged_since) = reorged_since {
@@ -324,7 +325,7 @@ impl Indexer {
 
             // Fetch the reorged blocks, then undo their history index db rows.
             // The txstore db rows are kept for reorged blocks/transactions.
-            start_fetcher(self.from, &daemon, reorged_headers, self.iconfig.block_batch_size)?
+            start_fetcher(self.from, &daemon, reorged_headers, self.iconfig.block_batch_size, chain_tip_height)?
                 .map(|blocks| self.undo_index(&blocks));
         }
 
@@ -350,20 +351,19 @@ impl Indexer {
         );
 
         let mut fetcher_count = 0;
-        let mut blocks_fetched = 0;
         let to_process_total = to_process.len();
 
-        start_fetcher(self.from, &daemon, to_process, self.iconfig.block_batch_size)?.map(|blocks| {
+        start_fetcher(self.from, &daemon, to_process, self.iconfig.block_batch_size, chain_tip_height)?.map(|blocks| {
             if fetcher_count % 25 == 0 && to_process_total > 20 {
+                let batch_height = blocks.last().map(|b| b.entry.height()).unwrap_or(0);
                 info!(
                     "processing blocks {}/{} ({:.1}%)",
-                    blocks_fetched,
-                    to_process_total,
-                    blocks_fetched as f32 / to_process_total as f32 * 100.0
+                    batch_height,
+                    chain_tip_height,
+                    batch_height as f32 / chain_tip_height.max(1) as f32 * 100.0
                 );
             }
             fetcher_count += 1;
-            blocks_fetched += blocks.len();
 
             // Add blocks not yet in txstore (idempotent: crash recovery skips already-added blocks)
             let to_add: Vec<_> = {
