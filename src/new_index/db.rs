@@ -162,15 +162,27 @@ impl DB {
         // With this, L0 index/filter blocks behave like the old table-reader heap
         // allocation but stay within the bounded block cache.
         block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-        // Full-key Bloom filters allow multi_get() to skip SST files that don't
-        // contain a key without touching the index or data blocks. Without this,
-        // every point lookup must binary-search the index of every L0 file whose
-        // key range overlaps the query (all of them for random txids) — extremely
-        // expensive with 1000+ L0 files accumulated during initial sync.
-        // At 10 bits/key the false-positive rate is ~1%, so only ~10 out of 1000
-        // L0 files need actual I/O per key. The filter blocks are cached and pinned
-        // alongside the index blocks via the settings above.
+        // Bloom filters allow multi_get() to skip SST files that don't contain a key
+        // without touching the index or data blocks. Without this, every point lookup
+        // must binary-search the index of every L0 file whose key range overlaps the
+        // query (all of them for random txids) — extremely expensive with 1000+ L0
+        // files accumulated during initial sync. At 10 bits/key the false-positive
+        // rate is ~1%, so only ~10 out of 1000 L0 files need actual I/O per key.
+        // Combined with the prefix extractor below, these become prefix Bloom filters
+        // keyed on `code || hash` (33 bytes), which also allow prefix range scans
+        // (e.g. history lookups) to skip L0 files entirely. The filter blocks are
+        // cached and pinned alongside the index blocks via the settings above.
         block_opts.set_bloom_filter(10.0, false);
+
+        // All electrs keys share the structure `code (1 byte) || hash (32 bytes) || ...`.
+        // A 33-byte fixed prefix extractor enables prefix Bloom filters: range scans
+        // like iter_scan("H" + scripthash) can skip SST files whose Bloom filter
+        // doesn't match the prefix, rather than checking every L0 file.
+        //
+        // INVARIANT: All iter_scan* and raw_iterator methods must use total_order_seek
+        // when the seek key may be shorter than 33 bytes. Without it, RocksDB silently
+        // skips SST files that contain matching keys. See the conditional in iter_scan().
+        db_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(33));
 
         db_opts.set_block_based_table_factory(&block_opts);
 
@@ -215,22 +227,49 @@ impl DB {
     }
 
     pub fn raw_iterator(&self) -> rocksdb::DBRawIterator<'_> {
-        self.db.raw_iterator()
+        let mut opts = rocksdb::ReadOptions::default();
+        opts.set_total_order_seek(true);
+        self.db.raw_iterator_opt(opts)
     }
 
     pub fn iter_scan(&self, prefix: &[u8]) -> ScanIterator<'_> {
+        let iter = if prefix.len() >= 33 {
+            self.db.prefix_iterator(prefix)
+        } else {
+            // Short prefixes (e.g. b"B", b"D") are below the 33-byte prefix extractor
+            // length. prefix_iterator would silently skip SST files. Use total_order_seek
+            // to fall back to a full scan; ScanIterator enforces the prefix boundary.
+            let mut opts = rocksdb::ReadOptions::default();
+            opts.set_total_order_seek(true);
+            self.db.iterator_opt(
+                rocksdb::IteratorMode::From(prefix, rocksdb::Direction::Forward),
+                opts,
+            )
+        };
         ScanIterator {
             prefix: prefix.to_vec(),
-            iter: self.db.prefix_iterator(prefix),
+            iter,
             done: false,
         }
     }
 
     pub fn iter_scan_from(&self, prefix: &[u8], start_at: &[u8]) -> ScanIterator<'_> {
-        let iter = self.db.iterator(rocksdb::IteratorMode::From(
-            start_at,
-            rocksdb::Direction::Forward,
-        ));
+        // start_at is always >= prefix length. When >= 33 bytes, the default seek
+        // uses the prefix extractor for bloom filtering automatically. When < 33
+        // bytes, fall back to total_order_seek to avoid silent misses.
+        let iter = if start_at.len() >= 33 {
+            self.db.iterator(rocksdb::IteratorMode::From(
+                start_at,
+                rocksdb::Direction::Forward,
+            ))
+        } else {
+            let mut opts = rocksdb::ReadOptions::default();
+            opts.set_total_order_seek(true);
+            self.db.iterator_opt(
+                rocksdb::IteratorMode::From(start_at, rocksdb::Direction::Forward),
+                opts,
+            )
+        };
         ScanIterator {
             prefix: prefix.to_vec(),
             iter,
@@ -239,7 +278,10 @@ impl DB {
     }
 
     pub fn iter_scan_reverse(&self, prefix: &[u8], prefix_max: &[u8]) -> ReverseScanIterator<'_> {
-        let mut iter = self.db.raw_iterator();
+        // total_order_seek is required for correctness: prefix mode (the default when a
+        // prefix extractor is set) is only guaranteed correct for forward iteration.
+        // SeekForPrev + Prev() in prefix mode can silently miss entries.
+        let mut iter = self.raw_iterator();
         iter.seek_for_prev(prefix_max);
 
         ReverseScanIterator {
@@ -334,6 +376,7 @@ impl DB {
     fn open_test(path: &Path) -> DB {
         let mut db_opts = rocksdb::Options::default();
         db_opts.create_if_missing(true);
+        db_opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(33));
 
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         block_opts.set_bloom_filter(10.0, false);
