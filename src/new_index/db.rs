@@ -330,6 +330,20 @@ impl DB {
         }
     }
 
+    #[cfg(test)]
+    fn open_test(path: &Path) -> DB {
+        let mut db_opts = rocksdb::Options::default();
+        db_opts.create_if_missing(true);
+
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        block_opts.set_bloom_filter(10.0, false);
+        db_opts.set_block_based_table_factory(&block_opts);
+
+        DB {
+            db: Arc::new(rocksdb::DB::open(&db_opts, path).expect("failed to open test RocksDB")),
+        }
+    }
+
     pub fn start_stats_exporter(&self, db_metrics: Arc<RocksDbMetrics>, db_name: &str) {
         let db_arc = Arc::clone(&self.db);
         let label = db_name.to_string();
@@ -378,5 +392,138 @@ impl DB {
             update_gauge(&db_metrics.block_cache_pinned_usage, "rocksdb.block-cache-pinned-usage");
             thread::sleep(Duration::from_secs(5));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a key mimicking electrs row format: 1-byte code + 32-byte hash + optional suffix.
+    fn make_key(code: u8, hash_byte: u8, suffix: &[u8]) -> Vec<u8> {
+        let mut key = vec![code];
+        key.extend_from_slice(&[hash_byte; 32]);
+        key.extend_from_slice(suffix);
+        key
+    }
+
+    fn write_test_rows(db: &DB) {
+        let rows = vec![
+            // B rows (block headers) — scanned with 1-byte prefix b"B"
+            DBRow { key: make_key(b'B', 0x01, &[]), value: b"header1".to_vec() },
+            DBRow { key: make_key(b'B', 0x02, &[]), value: b"header2".to_vec() },
+            // D rows (done markers) — scanned with 1-byte prefix b"D"
+            DBRow { key: make_key(b'D', 0x01, &[]), value: vec![] },
+            DBRow { key: make_key(b'D', 0x02, &[]), value: vec![] },
+            // H rows (history) — scanned with 33-byte prefix b"H" + scripthash
+            DBRow { key: make_key(b'H', 0xAA, &[0, 0, 0, 1]), value: vec![] },
+            DBRow { key: make_key(b'H', 0xAA, &[0, 0, 0, 2]), value: vec![] },
+            DBRow { key: make_key(b'H', 0xBB, &[0, 0, 0, 1]), value: vec![] },
+            // O rows (txouts) — looked up by exact key, but scannable by 33-byte prefix
+            DBRow { key: make_key(b'O', 0xCC, &[0, 1]), value: b"txout1".to_vec() },
+            DBRow { key: make_key(b'O', 0xCC, &[0, 2]), value: b"txout2".to_vec() },
+        ];
+        db.write_rows(rows, DBFlush::Enable);
+    }
+
+    #[test]
+    fn test_iter_scan_short_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DB::open_test(dir.path());
+        write_test_rows(&db);
+
+        // 1-byte prefix scan — must find all B rows
+        let b_rows: Vec<DBRow> = db.iter_scan(b"B").collect();
+        assert_eq!(b_rows.len(), 2, "expected 2 B rows, got {}", b_rows.len());
+        assert_eq!(b_rows[0].value, b"header1");
+        assert_eq!(b_rows[1].value, b"header2");
+
+        // 1-byte prefix scan — must find all D rows
+        let d_rows: Vec<DBRow> = db.iter_scan(b"D").collect();
+        assert_eq!(d_rows.len(), 2, "expected 2 D rows, got {}", d_rows.len());
+    }
+
+    #[test]
+    fn test_iter_scan_full_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DB::open_test(dir.path());
+        write_test_rows(&db);
+
+        // 33-byte prefix scan — must find only H rows for hash 0xAA
+        let prefix = make_key(b'H', 0xAA, &[]);
+        let h_rows: Vec<DBRow> = db.iter_scan(&prefix).collect();
+        assert_eq!(h_rows.len(), 2, "expected 2 H/0xAA rows, got {}", h_rows.len());
+
+        // 33-byte prefix scan — must find only H rows for hash 0xBB
+        let prefix = make_key(b'H', 0xBB, &[]);
+        let h_rows: Vec<DBRow> = db.iter_scan(&prefix).collect();
+        assert_eq!(h_rows.len(), 1, "expected 1 H/0xBB row, got {}", h_rows.len());
+
+        // 33-byte prefix scan — O rows for hash 0xCC
+        let prefix = make_key(b'O', 0xCC, &[]);
+        let o_rows: Vec<DBRow> = db.iter_scan(&prefix).collect();
+        assert_eq!(o_rows.len(), 2, "expected 2 O/0xCC rows, got {}", o_rows.len());
+    }
+
+    #[test]
+    fn test_iter_scan_from_full_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DB::open_test(dir.path());
+        write_test_rows(&db);
+
+        // Scan H/0xAA starting from height 2
+        let prefix = make_key(b'H', 0xAA, &[]);
+        let start = make_key(b'H', 0xAA, &[0, 0, 0, 2]);
+        let rows: Vec<DBRow> = db.iter_scan_from(&prefix, &start).collect();
+        assert_eq!(rows.len(), 1, "expected 1 H/0xAA row from height 2, got {}", rows.len());
+    }
+
+    #[test]
+    fn test_iter_scan_reverse_full_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DB::open_test(dir.path());
+        write_test_rows(&db);
+
+        // Reverse scan H/0xAA from max
+        let prefix = make_key(b'H', 0xAA, &[]);
+        let prefix_max = make_key(b'H', 0xAA, &[0xFF, 0xFF, 0xFF, 0xFF]);
+        let rows: Vec<DBRow> = db.iter_scan_reverse(&prefix, &prefix_max).collect();
+        assert_eq!(rows.len(), 2, "expected 2 H/0xAA rows in reverse, got {}", rows.len());
+        // Should be in reverse order
+        assert!(rows[0].key > rows[1].key, "reverse scan should return descending keys");
+    }
+
+    #[test]
+    fn test_iter_scan_no_cross_prefix_leakage() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DB::open_test(dir.path());
+        write_test_rows(&db);
+
+        // Scanning for a non-existent prefix returns nothing
+        let prefix = make_key(b'H', 0xFF, &[]);
+        let rows: Vec<DBRow> = db.iter_scan(&prefix).collect();
+        assert_eq!(rows.len(), 0, "expected 0 rows for non-existent prefix");
+
+        // Scanning b"B" must not return D, H, or O rows
+        let b_rows: Vec<DBRow> = db.iter_scan(b"B").collect();
+        for row in &b_rows {
+            assert_eq!(row.key[0], b'B', "B scan returned non-B row");
+        }
+    }
+
+    #[test]
+    fn test_raw_iterator_sees_all_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DB::open_test(dir.path());
+        write_test_rows(&db);
+
+        let mut iter = db.raw_iterator();
+        iter.seek_to_first();
+        let mut count = 0;
+        while iter.valid() {
+            count += 1;
+            iter.next();
+        }
+        assert_eq!(count, 9, "expected 9 total rows, got {}", count);
     }
 }
