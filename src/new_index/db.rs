@@ -95,32 +95,27 @@ impl DB {
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         db_opts.set_compression_type(rocksdb::DBCompressionType::Snappy);
         db_opts.set_target_file_size_base(1_073_741_824);
-        if config.initial_sync_compaction {
-            // Tight compaction: use RocksDB defaults (L0 trigger = 4 files).
-            // Higher write amplification but minimises L0 file count at all times.
-        } else {
-            // Bulk-load compaction: allow L0 files to accumulate to a bounded limit
-            // before compacting. This reduces write amplification compared to the
-            // default trigger of 4, while keeping the file count — and therefore
-            // bloom-filter memory and lookup cost — bounded.
-            //
-            // With bloom filters at 10 bits/key and a 512 MB write buffer, each L0
-            // file has ~7.8 M keys, so its filter block is ~9.75 MB. At 64 files
-            // that is ~625 MB of pinned filter blocks — well within an 8 GB cache.
-            // Each lookup checks 64 bloom filters (fast, in-memory) and reads from
-            // only ~0.64 files on average (1 % false-positive rate × 64 files).
-            //
-            // Set slowdown/stop triggers well above the compaction trigger so writes
-            // are never stalled while background compaction catches up.
-            // Disable the pending-compaction-bytes stall so the large backlog that
-            // builds up during the bulk load does not block writes.
-            const L0_BULK_TRIGGER: i32 = 64;
-            db_opts.set_level_zero_file_num_compaction_trigger(L0_BULK_TRIGGER);
-            db_opts.set_level_zero_slowdown_writes_trigger(L0_BULK_TRIGGER * 4);
-            db_opts.set_level_zero_stop_writes_trigger(L0_BULK_TRIGGER * 8);
-            db_opts.set_hard_pending_compaction_bytes_limit(0);
-            db_opts.set_soft_pending_compaction_bytes_limit(0);
-        }
+        // Bulk-load compaction: allow L0 files to accumulate to a bounded limit
+        // before compacting. This reduces write amplification compared to the
+        // default trigger of 4, while keeping the file count — and therefore
+        // bloom-filter memory and lookup cost — bounded.
+        //
+        // With bloom filters at 10 bits/key and a 512 MB write buffer, each L0
+        // file has ~7.8 M keys, so its filter block is ~9.75 MB. At 64 files
+        // that is ~625 MB of pinned filter blocks — well within an 8 GB cache.
+        // Each lookup checks 64 bloom filters (fast, in-memory) and reads from
+        // only ~0.64 files on average (1 % false-positive rate × 64 files).
+        //
+        // Set slowdown/stop triggers well above the compaction trigger so writes
+        // are never stalled while background compaction catches up.
+        // Disable the pending-compaction-bytes stall so the large backlog that
+        // builds up during the bulk load does not block writes.
+        const L0_BULK_TRIGGER: i32 = 64;
+        db_opts.set_level_zero_file_num_compaction_trigger(L0_BULK_TRIGGER);
+        db_opts.set_level_zero_slowdown_writes_trigger(L0_BULK_TRIGGER * 4);
+        db_opts.set_level_zero_stop_writes_trigger(L0_BULK_TRIGGER * 8);
+        db_opts.set_hard_pending_compaction_bytes_limit(0);
+        db_opts.set_soft_pending_compaction_bytes_limit(0);
 
 
         let parallelism: i32 = config.db_parallelism.try_into()

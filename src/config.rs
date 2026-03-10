@@ -43,15 +43,6 @@ pub struct Config {
     pub rpc_logging: RpcLogging,
     pub zmq_addr: Option<SocketAddr>,
 
-    /// Use tight compaction during initial sync (L0 trigger = 4, RocksDB default).
-    ///
-    /// By default, a bulk-load compaction mode is used: L0 files accumulate up to 64
-    /// before triggering a compaction. This bounds bloom-filter memory (~625 MB) and
-    /// lookup cost while reducing write amplification versus the default trigger of 4.
-    /// Enable this flag only if you want the lowest possible L0 file count at the cost
-    /// of higher write amplification and more background I/O during initial sync.
-    pub initial_sync_compaction: bool,
-
     /// RocksDB block cache size in MB (per database)
     /// Caches decompressed blocks in memory to avoid repeated decompression (CPU intensive)
     /// Total memory usage = cache_size * 3_databases (txstore, history, cache)
@@ -234,10 +225,6 @@ impl Config {
                     .long("anonymize-json-rpc-logging-source-ip")
                     .help("enables ip anonymization in rpc logs")
                     .takes_value(false)
-            ).arg(
-                Arg::with_name("initial_sync_compaction")
-                    .long("initial-sync-compaction")
-                    .help("Use tight compaction during initial sync (L0 trigger=4). Default is bulk-load mode (L0 trigger=64) which reduces write amplification while keeping bloom-filter memory bounded.")
             ).arg(
                 Arg::with_name("db_block_cache_mb")
                     .long("db-block-cache-mb")
@@ -492,7 +479,6 @@ impl Config {
             index_unspendables: m.is_present("index_unspendables"),
             cors: m.value_of("cors").map(|s| s.to_string()),
             precache_scripts: m.value_of("precache_scripts").map(|s| s.to_string()),
-            initial_sync_compaction: m.is_present("initial_sync_compaction"),
             db_block_cache_mb: value_t_or_exit!(m, "db_block_cache_mb", usize),
             db_parallelism: value_t_or_exit!(m, "db_parallelism", usize),
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
