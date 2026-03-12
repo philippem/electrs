@@ -192,7 +192,7 @@ fn spawn_salt_rotation_thread() -> Arc<RwLock<String>> {
             {
                 let mut guard = writer_arc.write().unwrap();
                 rotate_salt(&mut *guard);
-                info!("Salt rotated");
+                info!("salt rotated");
             }
         }
     });
