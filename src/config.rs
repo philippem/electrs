@@ -279,7 +279,7 @@ impl Config {
                     .long("db-write-buffer-size-mb")
                     .help("RocksDB write buffer size in MB per database. RAM usage = size * max_write_buffers(2) * 3_databases")
                     .takes_value(true)
-                    .default_value("256")
+                    .default_value("128")
              ).arg(
                 Arg::with_name("initial_sync_batch_size")
                     .long("initial-sync-batch-size")
