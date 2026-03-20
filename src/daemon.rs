@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 use std::{env, fs, io};
 
 use base64::prelude::{Engine, BASE64_STANDARD};
-#[cfg(feature = "liquid")]
 use bitcoin::hex::FromHex;
 use error_chain::ChainedError;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+#[cfg(not(feature = "liquid"))]
+use rayon::iter::IntoParallelRefIterator;
 use serde_json::{from_str, from_value, Value};
 
 #[cfg(not(feature = "liquid"))]
@@ -639,8 +640,11 @@ pub struct Daemon {
     conn: Mutex<Connection>,
     message_id: Counter, // for monotonic JSONRPC 'id'
     signal: Waiter,
+    addr: SocketAddr,
 
     rpc_threads: Arc<rayon::ThreadPool>,
+    #[cfg(not(feature = "liquid"))]
+    rest_agent: ureq::Agent, // connection-pooling HTTP agent for REST endpoints
 
     // Caps concurrent RPCs issued on behalf of API clients (see `request_proxied`).
     // Shared across reconnects so the cap stays global to the process.
@@ -682,6 +686,7 @@ impl Daemon {
             conn: Mutex::new(conn),
             message_id: Counter::new(),
             signal: signal.clone(),
+            addr: daemon_rpc_addr,
             rpc_threads: Arc::new(
                 rayon::ThreadPoolBuilder::new()
                     .num_threads(daemon_parallelism)
@@ -690,6 +695,13 @@ impl Daemon {
                     .unwrap(),
             ),
             proxy_limit: Arc::new(BlockingSemaphore::new(*DAEMON_PROXY_MAX_CONCURRENCY)),
+            #[cfg(not(feature = "liquid"))]
+            rest_agent: ureq::Agent::new_with_config(
+                ureq::Agent::config_builder()
+                    .max_idle_connections(daemon_parallelism * 2)
+                    .max_idle_connections_per_host(daemon_parallelism * 2)
+                    .build(),
+            ),
             latency: metrics.histogram_vec(
                 HistogramOpts::new("daemon_rpc", "Bitcoind RPC latency (in seconds)"),
                 &["method"],
@@ -754,8 +766,11 @@ impl Daemon {
             conn: Mutex::new(self.conn.lock().unwrap().reconnect()?),
             message_id: Counter::new(),
             signal: self.signal.clone(),
+            addr: self.addr,
             rpc_threads: self.rpc_threads.clone(),
             proxy_limit: Arc::clone(&self.proxy_limit),
+            #[cfg(not(feature = "liquid"))]
+            rest_agent: self.rest_agent.clone(),
             latency: self.latency.clone(),
             size: self.size.clone(),
             conn_recycle: self.conn_recycle.clone(),
@@ -1316,6 +1331,79 @@ impl Daemon {
         // from BTC/kB to sat/b
         Ok(relayfee * 100_000f64)
     }
+
+    /// Fetch spent transaction outputs for the given blocks via Bitcoin Core's
+    /// REST /rest/spenttxouts/<hash>.json endpoint.
+    ///
+    /// Returns one entry per block. Each block entry contains one Vec<TxOut> per
+    /// non-coinbase transaction, with TxOuts ordered by input index.
+    ///
+    /// Requires bitcoind started with -rest=1.
+    #[cfg(not(feature = "liquid"))]
+    pub fn get_spent_txouts(
+        &self,
+        blockhashes: &[BlockHash],
+    ) -> Result<Vec<Vec<Vec<bitcoin::TxOut>>>> {
+        let addr = self.addr;
+        let rest_agent = &self.rest_agent;
+        self.rpc_threads.install(|| {
+            blockhashes
+                .par_iter()
+                .map(|hash| {
+                    let url = format!("http://{}/rest/spenttxouts/{}.json", addr, hash);
+                    let mut response = rest_agent.get(&url).call().map_err(|e| {
+                        ErrorKind::Connection(format!(
+                            "REST spenttxouts failed for {} (is bitcoind running with -rest=1?): {}",
+                            hash, e
+                        ))
+                    })?;
+                    // Response is Vec<Vec<SpentTxout>>: one entry per non-coinbase tx,
+                    // each containing the TxOuts spent by that tx's inputs.
+                    let data: Vec<Vec<SpentTxout>> =
+                        response.body_mut().read_json().map_err(|e| {
+                            ErrorKind::Connection(format!(
+                                "failed to parse spenttxouts for {}: {}",
+                                hash, e
+                            ))
+                        })?;
+                    Ok(data
+                        .into_iter()
+                        .map(|tx_inputs: Vec<SpentTxout>| {
+                            tx_inputs
+                                .into_iter()
+                                .map(|input| {
+                                    bitcoin::TxOut {
+                                        value: bitcoin::Amount::from_btc(input.value)
+                                            .expect("invalid BTC value in spenttxouts"),
+                                        script_pubkey: bitcoin::ScriptBuf::from_bytes(
+                                            Vec::from_hex(&input.script_pub_key.hex)
+                                                .expect("invalid script hex in spenttxouts"),
+                                        ),
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .collect())
+                })
+                .collect()
+        })
+    }
+}
+
+/// Bitcoin Core REST /rest/spenttxouts/<hash>.json returns Vec<Vec<SpentTxout>>:
+/// one entry per non-coinbase tx, each containing the spent outputs for that tx's inputs.
+#[cfg(not(feature = "liquid"))]
+#[derive(Deserialize)]
+struct SpentTxout {
+    value: f64,
+    #[serde(rename = "scriptPubKey")]
+    script_pub_key: SpentTxoutScript,
+}
+
+#[cfg(not(feature = "liquid"))]
+#[derive(Deserialize)]
+struct SpentTxoutScript {
+    hex: String,
 }
 
 #[cfg(test)]

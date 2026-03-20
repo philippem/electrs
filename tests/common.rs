@@ -57,6 +57,10 @@ impl TestRunner {
             #[cfg(feature = "liquid")]
             node_conf.args.push("-anyonecanspendaremine=1");
 
+            // Enable REST API for spenttxouts endpoint (requires Core 30+)
+            #[cfg(not(feature = "liquid"))]
+            node_conf.args.push("-rest=1");
+
             node_conf.view_stdout = std::env::var_os("RUST_LOG").is_some();
         }
 
@@ -127,6 +131,10 @@ impl TestRunner {
             db_write_buffer_size_mb: 256,
             initial_sync_batch_size: 250,
             db_cache_index_filter_blocks: false,
+            // Test bitcoind is Core 29 which lacks the spenttxouts REST endpoint.
+            // Set to true when upgrading to Core 30+.
+            #[cfg(not(feature = "liquid"))]
+            use_spenttxouts: false,
             //#[cfg(feature = "electrum-discovery")]
             //electrum_public_hosts: Option<crate::electrum::ServerHosts>,
             //#[cfg(feature = "electrum-discovery")]

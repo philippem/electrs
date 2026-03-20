@@ -83,6 +83,12 @@ pub struct Config {
     /// per SST file of unbounded memory.
     pub db_cache_index_filter_blocks: bool,
 
+    /// Use Bitcoin Core's REST spenttxouts endpoint to resolve spent outputs during indexing,
+    /// instead of looking them up in RocksDB. ~8-10x faster initial sync.
+    /// Requires Bitcoin Core 30+ with -rest=1.
+    #[cfg(not(feature = "liquid"))]
+    pub use_spenttxouts: bool,
+
     #[cfg(feature = "liquid")]
     pub parent_network: BNetwork,
     #[cfg(feature = "liquid")]
@@ -519,6 +525,7 @@ impl Config {
         // Base verbosity is 2 (Info), each -v flag adds one level:
         // no flags = Info, -v = Debug, -vv = Trace
         log.verbosity(2 + m.occurrences_of("verbosity") as usize);
+        log.module("electrs");
         log.timestamp(if m.is_present("timestamp") {
             stderrlog::Timestamp::Millisecond
         } else {
@@ -567,6 +574,8 @@ impl Config {
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
             initial_sync_batch_size: value_t_or_exit!(m, "initial_sync_batch_size", usize),
             db_cache_index_filter_blocks: m.is_present("cache_index_filter_blocks"),
+            #[cfg(not(feature = "liquid"))]
+            use_spenttxouts: true,
             zmq_addr,
 
             #[cfg(feature = "liquid")]

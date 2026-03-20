@@ -215,6 +215,10 @@ struct IndexerConfig {
     index_unspendables: bool,
     network: Network,
     block_batch_size: usize,
+    /// Use Bitcoin Core's REST spenttxouts endpoint instead of RocksDB lookups
+    /// for resolving spent outputs during indexing. Requires Bitcoin Core 30+ with -rest=1.
+    #[cfg(not(feature = "liquid"))]
+    use_spenttxouts: bool,
     #[cfg(feature = "liquid")]
     parent_network: crate::chain::BNetwork,
 }
@@ -227,6 +231,8 @@ impl From<&Config> for IndexerConfig {
             index_unspendables: config.index_unspendables,
             network: config.network_type,
             block_batch_size: config.initial_sync_batch_size,
+            #[cfg(not(feature = "liquid"))]
+            use_spenttxouts: config.use_spenttxouts,
             #[cfg(feature = "liquid")]
             parent_network: config.parent_network,
         }
@@ -423,7 +429,29 @@ impl Indexer {
                     self.add(&to_add);
                 }
                 if !to_index.is_empty() {
-                    self.index(&to_index);
+                    #[cfg(not(feature = "liquid"))]
+                    {
+                        if self.iconfig.use_spenttxouts {
+                            let blockhashes: Vec<BlockHash> =
+                                to_index.iter().map(|b| *b.entry.hash()).collect();
+                            let spenttxouts = {
+                                let _timer = self.start_timer("spenttxouts_fetch");
+                                daemon.get_spent_txouts(&blockhashes).expect(
+                                    "failed to fetch spenttxouts — \
+                                     requires Bitcoin Core 30+ with -rest=1",
+                                )
+                            };
+                            let previous_txos =
+                                build_spent_txos_map(&to_index, spenttxouts);
+                            self.index_with_txos(&to_index, previous_txos);
+                        } else {
+                            self.index(&to_index);
+                        }
+                    }
+                    #[cfg(feature = "liquid")]
+                    {
+                        self.index(&to_index);
+                    }
                 }
             }
             if let Some(last) = blocks.last() {
@@ -498,10 +526,21 @@ impl Indexer {
             .extend(blocks.iter().map(|b| b.entry.hash()));
     }
 
+    #[cfg_attr(not(feature = "liquid"), allow(dead_code))]
     fn index(&self, blocks: &[BlockEntry]) {
         self.store
             .history_db
-            .write_rows(self._index(blocks), self.flush);
+            .write_rows(self._index(blocks, None), self.flush);
+
+        let mut indexed_blockhashes = self.store.indexed_blockhashes.write().unwrap();
+        indexed_blockhashes.extend(blocks.iter().map(|b| b.entry.hash()));
+    }
+
+    #[cfg(not(feature = "liquid"))]
+    fn index_with_txos(&self, blocks: &[BlockEntry], previous_txos: HashMap<OutPoint, TxOut>) {
+        self.store
+            .history_db
+            .write_rows(self._index(blocks, Some(previous_txos)), self.flush);
 
         let mut indexed_blockhashes = self.store.indexed_blockhashes.write().unwrap();
         indexed_blockhashes.extend(blocks.iter().map(|b| b.entry.hash()));
@@ -516,7 +555,7 @@ impl Indexer {
     fn undo_index(&self, blocks: &[BlockEntry]) {
         self.store
             .history_db
-            .delete_rows(self._index(blocks), self.flush);
+            .delete_rows(self._index(blocks, None), self.flush);
         // Note this doesn't actually "undo" the rows - the keys are simply deleted, and won't get
         // reverted back to their prior value (if there was one). It is expected that the history db
         // keys created by blocks are always unique and impossible to already exist from a prior block.
@@ -529,10 +568,17 @@ impl Indexer {
         }
     }
 
-    fn _index(&self, blocks: &[BlockEntry]) -> Vec<DBRow> {
-        let previous_txos_map = {
-            let _timer = self.start_timer("index_lookup");
-            lookup_txos(&self.store.txstore_db, get_previous_txos(blocks)).unwrap()
+    fn _index(
+        &self,
+        blocks: &[BlockEntry],
+        prebuilt_txos: Option<HashMap<OutPoint, TxOut>>,
+    ) -> Vec<DBRow> {
+        let previous_txos_map = match prebuilt_txos {
+            Some(map) => map,
+            None => {
+                let _timer = self.start_timer("index_lookup");
+                lookup_txos(&self.store.txstore_db, get_previous_txos(blocks)).unwrap()
+            }
         };
         let rows = {
             let _timer = self.start_timer("index_process");
@@ -1325,6 +1371,48 @@ fn lookup_txos(txstore_db: &DB, outpoints: BTreeSet<OutPoint>) -> Result<HashMap
         .collect()
 }
 
+/// Build the OutPoint → TxOut map from Bitcoin Core's spenttxouts REST data.
+/// Each block's undo data contains, for every non-coinbase transaction, the TxOut
+/// that each input spent — in input order. We zip this against the block's tx data
+/// to reconstruct the mapping.
+#[cfg(not(feature = "liquid"))]
+fn build_spent_txos_map(
+    blocks: &[BlockEntry],
+    spenttxouts: Vec<Vec<Vec<TxOut>>>,
+) -> HashMap<OutPoint, TxOut> {
+    assert_eq!(blocks.len(), spenttxouts.len());
+    let mut map = HashMap::new();
+    for (block, mut block_undo) in blocks.iter().zip(spenttxouts) {
+        let non_coinbase_txs = &block.block.txdata[1..];
+        // The spenttxouts response includes the coinbase tx (with an empty inputs
+        // array) as the first element. Skip it to align with non_coinbase_txs.
+        assert!(
+            !block_undo.is_empty(),
+            "spenttxouts response is empty for block {}",
+            block.entry.hash()
+        );
+        block_undo.remove(0);
+        assert_eq!(
+            non_coinbase_txs.len(),
+            block_undo.len(),
+            "spenttxouts tx count mismatch for block {}",
+            block.entry.hash()
+        );
+        for (tx, tx_undo) in non_coinbase_txs.iter().zip(block_undo) {
+            assert_eq!(
+                tx.input.len(),
+                tx_undo.len(),
+                "spenttxouts input count mismatch for tx {}",
+                tx.compute_txid()
+            );
+            for (txi, txout) in tx.input.iter().zip(tx_undo) {
+                map.insert(txi.previous_output, txout);
+            }
+        }
+    }
+    map
+}
+
 fn lookup_txo(txstore_db: &DB, outpoint: &OutPoint) -> Option<TxOut> {
     txstore_db
         .get(&TxOutRow::key(&outpoint))
@@ -2033,5 +2121,171 @@ mod tests {
                 .parse()
                 .unwrap();
         assert_eq!(sha256::Hash::hash(b"abc"), expected);
+    }
+}
+
+#[cfg(all(test, not(feature = "liquid")))]
+mod spenttxouts_tests {
+    use super::*;
+    use bitcoin::blockdata::block::{Block, Header, Version};
+    use bitcoin::blockdata::transaction::{Transaction, TxIn};
+    use bitcoin::hashes::Hash;
+    use bitcoin::{Amount, CompactTarget, ScriptBuf, TxMerkleNode};
+
+    fn dummy_header() -> Header {
+        Header {
+            version: Version::ONE,
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: 0,
+            bits: CompactTarget::from_consensus(0x207fffff),
+            nonce: 0,
+        }
+    }
+
+    fn coinbase_tx() -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: bitcoin::Sequence::MAX,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(5000000000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        }
+    }
+
+    fn spending_tx(prevouts: &[(Txid, u32)]) -> Transaction {
+        Transaction {
+            version: bitcoin::transaction::Version(1),
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: prevouts
+                .iter()
+                .map(|(txid, vout)| TxIn {
+                    previous_output: OutPoint::new(*txid, *vout),
+                    script_sig: ScriptBuf::new(),
+                    sequence: bitcoin::Sequence::MAX,
+                    witness: bitcoin::Witness::new(),
+                })
+                .collect(),
+            output: vec![TxOut {
+                value: Amount::from_sat(1000),
+                script_pubkey: ScriptBuf::from_bytes(vec![0x51; 34]),
+            }],
+        }
+    }
+
+    fn make_block_entry(txs: Vec<Transaction>, height: usize) -> BlockEntry {
+        let block = Block {
+            header: dummy_header(),
+            txdata: txs,
+        };
+        let hash = block.block_hash();
+        let txids = block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+        BlockEntry {
+            entry: HeaderEntry::new(height, hash, block.header),
+            size: 0,
+            txids,
+            block,
+        }
+    }
+
+    #[test]
+    fn test_build_spent_txos_map_single_block() {
+        let prev_txid_a = Txid::from_byte_array([0xaa; 32]);
+        let prev_txid_b = Txid::from_byte_array([0xbb; 32]);
+
+        // Block with coinbase + one tx spending two inputs
+        let tx = spending_tx(&[(prev_txid_a, 0), (prev_txid_b, 1)]);
+        let block = make_block_entry(vec![coinbase_tx(), tx], 100);
+
+        let spent_a = TxOut {
+            value: Amount::from_sat(50000),
+            script_pubkey: ScriptBuf::from_bytes(vec![0x76, 0xa9]),
+        };
+        let spent_b = TxOut {
+            value: Amount::from_sat(100000),
+            script_pubkey: ScriptBuf::from_bytes(vec![0x00, 0x14]),
+        };
+
+        let spenttxouts = vec![
+            // one block
+            vec![
+                vec![], // coinbase (empty inputs)
+                // one non-coinbase tx with two inputs
+                vec![spent_a.clone(), spent_b.clone()],
+            ],
+        ];
+
+        let map = build_spent_txos_map(&[block], spenttxouts);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&OutPoint::new(prev_txid_a, 0)], spent_a);
+        assert_eq!(map[&OutPoint::new(prev_txid_b, 1)], spent_b);
+    }
+
+    #[test]
+    fn test_build_spent_txos_map_multiple_txs() {
+        let prev1 = Txid::from_byte_array([0x11; 32]);
+        let prev2 = Txid::from_byte_array([0x22; 32]);
+
+        let tx1 = spending_tx(&[(prev1, 0)]);
+        let tx2 = spending_tx(&[(prev2, 3)]);
+        let block = make_block_entry(vec![coinbase_tx(), tx1, tx2], 200);
+
+        let spent1 = TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::from_bytes(vec![0xab]),
+        };
+        let spent2 = TxOut {
+            value: Amount::from_sat(2000),
+            script_pubkey: ScriptBuf::from_bytes(vec![0xcd]),
+        };
+
+        let spenttxouts = vec![vec![vec![], vec![spent1.clone()], vec![spent2.clone()]]];
+
+        let map = build_spent_txos_map(&[block], spenttxouts);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&OutPoint::new(prev1, 0)], spent1);
+        assert_eq!(map[&OutPoint::new(prev2, 3)], spent2);
+    }
+
+    #[test]
+    fn test_build_spent_txos_map_coinbase_only_block() {
+        // Block with only a coinbase — spenttxouts has just the coinbase entry
+        let block = make_block_entry(vec![coinbase_tx()], 0);
+        let spenttxouts = vec![vec![vec![]]]; // coinbase only (empty inputs)
+        let map = build_spent_txos_map(&[block], spenttxouts);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "spenttxouts tx count mismatch")]
+    fn test_build_spent_txos_map_tx_count_mismatch() {
+        let tx = spending_tx(&[(Txid::from_byte_array([0xff; 32]), 0)]);
+        let block = make_block_entry(vec![coinbase_tx(), tx], 100);
+        // Provide coinbase + 2 tx entries but block has only 1 non-coinbase tx
+        let spenttxouts = vec![vec![vec![], vec![], vec![]]];
+        build_spent_txos_map(&[block], spenttxouts);
+    }
+
+    #[test]
+    #[should_panic(expected = "spenttxouts input count mismatch")]
+    fn test_build_spent_txos_map_input_count_mismatch() {
+        let tx = spending_tx(&[(Txid::from_byte_array([0xff; 32]), 0)]);
+        let block = make_block_entry(vec![coinbase_tx(), tx], 100);
+        // Tx has 1 input but spenttxouts provides 2 spent outputs
+        let spent = TxOut {
+            value: Amount::from_sat(1),
+            script_pubkey: ScriptBuf::new(),
+        };
+        let spenttxouts = vec![vec![vec![], vec![spent.clone(), spent]]];
+        build_spent_txos_map(&[block], spenttxouts);
     }
 }
