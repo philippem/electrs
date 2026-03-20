@@ -193,10 +193,23 @@ impl DB {
     }
 
     fn apply_bulk_load_triggers(&self) {
-        const L0_BULK_TRIGGER: u32 = 64;
+        // Allow L0 files to accumulate before compacting, reducing write
+        // amplification compared to the default trigger of 4, while keeping the
+        // file count — and therefore bloom-filter memory and lookup cost — bounded.
+        //
+        // With bloom filters at 10 bits/key and a 128 MB write buffer, each L0 file
+        // has ~3.9 M keys, so its filter block is ~4.9 MB. At the slowdown threshold
+        // (96 files) that is ~470 MB of pinned filter blocks per DB, ~1.41 GB across
+        // 3 DBs — within a 2 GB cache. At the stop threshold (128 files) it is
+        // ~628 MB per DB / ~1.88 GB total, still within bounds. Trigger=64 with
+        // 256 MB buffers caused pinned metadata to overflow the 2 GB cache at
+        // L0=128 (~3.7 GB), spilling to uncontrolled heap and triggering OOM.
+        // Trigger=32 + slowdown=96 keeps the peak safe while allowing enough L0
+        // accumulation for good bulk-load throughput.
+        const L0_BULK_TRIGGER: u32 = 32;
         let trigger = L0_BULK_TRIGGER.to_string();
-        let slowdown = (L0_BULK_TRIGGER * 4).to_string();
-        let stop = (L0_BULK_TRIGGER * 8).to_string();
+        let slowdown = (L0_BULK_TRIGGER * 3).to_string();
+        let stop = (L0_BULK_TRIGGER * 4).to_string();
 
         let opts = [
             ("level0_file_num_compaction_trigger", trigger.as_str()),
