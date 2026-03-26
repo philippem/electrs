@@ -140,6 +140,20 @@ impl DB {
         // rather than doing a large fsync on close. Smooths out I/O latency spikes.
         db_opts.set_bytes_per_sync(1 << 20);
 
+        // Bypass the OS page cache for SST reads and flush/compaction writes.
+        // Combined with the block cache above, this eliminates double-buffering: the OS
+        // would otherwise cache the same SST data in both the page cache and the block
+        // cache, wasting up to tens of GB of RAM during initial sync. With Direct I/O,
+        // all caching goes through the bounded block cache we've configured.
+        db_opts.set_use_direct_reads(true);
+        db_opts.set_use_direct_io_for_flush_and_compaction(true);
+
+        // Allow a third memtable to be queued while two others are being flushed.
+        // Default is 2. With 20 background threads and 256 MiB write buffers, a
+        // third buffer prevents write stalls during heavy batch-write phases when
+        // flush I/O can't keep up. Cost: +256 MiB × 3 DBs = +768 MiB total.
+        db_opts.set_max_write_buffer_number(3);
+
         // Parallelize sub-ranges within a single compaction job (including the one-time
         // full_compaction at the end of initial sync). Without this, compact_range() is
         // single-threaded regardless of increase_parallelism(). Setting it equal to the
@@ -149,7 +163,13 @@ impl DB {
         // Configure block cache and table options
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         let cache_size_bytes = config.db_block_cache_mb * 1024 * 1024;
-        block_opts.set_block_cache(&rocksdb::Cache::new_lru_cache(cache_size_bytes));
+        // HyperClockCache is lock-free (atomic CAS) vs LRUCache's sharded mutex.
+        // Under high concurrency (20 compaction threads + rayon workers), this reduces
+        // cache contention. Combined with use_direct_reads below, every data access goes
+        // through this cache (no page-cache fallback), so throughput under contention matters.
+        // estimated_entry_charge = 4096: pinned L0 filter/index blocks are not evicted,
+        // so the evictable working set is dominated by 4 KiB data blocks.
+        block_opts.set_block_cache(&rocksdb::Cache::new_hyper_clock_cache(cache_size_bytes, 4096));
         // Store index and filter blocks inside the block cache so their memory is
         // bounded by --db-block-cache-mb. Without this, RocksDB allocates table-reader
         // memory (index + filter blocks) on the heap separately for every open SST file.

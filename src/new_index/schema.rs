@@ -414,9 +414,13 @@ impl Indexer {
         });
 
         // Compact after all add+index work is done, not between passes.
-        self.start_auto_compactions(&self.store.txstore_db);
-        self.start_auto_compactions(&self.store.history_db);
-        self.start_auto_compactions(&self.store.cache_db);
+        // Run all three DB compactions in parallel: each full_compaction() can take
+        // 30-60+ minutes, so sequential execution wastes ~2x the wall-clock time.
+        rayon::scope(|s| {
+            s.spawn(|_| self.start_auto_compactions(&self.store.txstore_db));
+            s.spawn(|_| self.start_auto_compactions(&self.store.history_db));
+            s.spawn(|_| self.start_auto_compactions(&self.store.cache_db));
+        });
 
         if let DBFlush::Disable = self.flush {
             let t = std::time::Instant::now();
