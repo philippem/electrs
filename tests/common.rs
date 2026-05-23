@@ -57,6 +57,8 @@ impl TestRunner {
             #[cfg(feature = "liquid")]
             node_conf.args.push("-anyonecanspendaremine=1");
 
+            node_conf.args.push("-rest=1");
+
             node_conf.view_stdout = std::env::var_os("RUST_LOG").is_some();
         }
 
