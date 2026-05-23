@@ -16,6 +16,8 @@ use elements::{
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
+#[cfg(not(feature = "liquid"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use crate::config::Config;
@@ -209,6 +211,8 @@ struct IndexerConfig {
     index_unspendables: bool,
     network: Network,
     block_batch_size: usize,
+    #[cfg(not(feature = "liquid"))]
+    use_spenttxouts: bool,
     #[cfg(feature = "liquid")]
     parent_network: crate::chain::BNetwork,
 }
@@ -220,6 +224,8 @@ impl From<&Config> for IndexerConfig {
             index_unspendables: config.index_unspendables,
             network: config.network_type,
             block_batch_size: config.initial_sync_batch_size,
+            #[cfg(not(feature = "liquid"))]
+            use_spenttxouts: config.use_spenttxouts,
             #[cfg(feature = "liquid")]
             parent_network: config.parent_network,
         }
@@ -367,6 +373,76 @@ impl Indexer {
             });
         }
 
+        self.process_blocks(&daemon, &new_headers, chain_tip_height)?;
+
+        // Compact after all add+index work is done, not between passes.
+        self.start_auto_compactions(&self.store.txstore_db);
+        self.start_auto_compactions(&self.store.history_db);
+        self.start_auto_compactions(&self.store.cache_db);
+
+        if let DBFlush::Disable = self.flush {
+            let t = std::time::Instant::now();
+            info!("flushing txstore_db to disk");
+            self.store.txstore_db.flush();
+            info!("flushing txstore_db complete in {:.1?}", t.elapsed());
+
+            let t = std::time::Instant::now();
+            info!("flushing history_db to disk");
+            self.store.history_db.flush();
+            info!("flushing history_db complete in {:.1?}", t.elapsed());
+
+            // cache_db receives WAL-disabled writes when --address-search is enabled,
+            // so it needs the same explicit flush to ensure durability.
+            let t = std::time::Instant::now();
+            info!("flushing cache_db to disk");
+            self.store.cache_db.flush();
+            info!("flushing cache_db complete in {:.1?}", t.elapsed());
+
+            self.flush = DBFlush::Enable;
+        }
+
+        // Update the synced tip after all db writes are flushed
+        debug!("updating synced tip to {:?}", tip);
+        self.store.txstore_db.put_sync(b"t", &serialize(&tip));
+
+        // Finally, append the new headers to the in-memory HeaderList.
+        // This will make both the headers and the history entries visible in the public APIs, consistently with each-other.
+        let mut headers = self.store.indexed_headers.write().unwrap();
+        headers.append(new_headers);
+        assert_eq!(tip, *headers.tip());
+
+        self.tip_metric.set(headers.best_height() as i64);
+
+        Ok(tip)
+    }
+
+    fn process_blocks(
+        &self,
+        daemon: &Daemon,
+        new_headers: &[HeaderEntry],
+        chain_tip_height: usize,
+    ) -> Result<()> {
+        let to_process = self.headers_to_process(new_headers);
+
+        if to_process.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "liquid"))]
+        if self.iconfig.use_spenttxouts {
+            return self.process_blocks_spenttxouts(daemon, to_process, chain_tip_height);
+        }
+
+        self.process_blocks_legacy(daemon, to_process, chain_tip_height)
+    }
+
+    fn process_blocks_legacy(
+        &self,
+        daemon: &Daemon,
+        to_process: Vec<HeaderWork>,
+        chain_tip_height: usize,
+    ) -> Result<()> {
+        let _timer = self.start_timer("process_blocks");
         // Single-pass: add to txstore and index to history in the same per-batch loop.
         //
         // In the old two-pass approach, txstore_db was fully compacted between the add
@@ -381,7 +457,6 @@ impl Indexer {
         // Crash safety: added_blockhashes / indexed_blockhashes are persisted via the
         // "D" done-marker rows. On restart, headers_to_process() re-derives which
         // blocks still need work, so partially-processed batches are re-processed safely.
-        let to_process = self.headers_to_process(&new_headers);
         debug!("processing {} blocks (add + index)", to_process.len());
 
         let mut fetcher_count = 0;
@@ -390,7 +465,7 @@ impl Indexer {
         let mut to_process_batches = to_process.chunks(self.iconfig.block_batch_size);
 
         start_fetcher(
-            &daemon,
+            daemon,
             headers_to_fetch,
             self.iconfig.block_batch_size,
             chain_tip_height,
@@ -445,45 +520,101 @@ impl Indexer {
         });
         assert!(to_process_batches.next().is_none());
 
-        // Compact after all add+index work is done, not between passes.
-        self.start_auto_compactions(&self.store.txstore_db);
-        self.start_auto_compactions(&self.store.history_db);
-        self.start_auto_compactions(&self.store.cache_db);
+        Ok(())
+    }
 
-        if let DBFlush::Disable = self.flush {
-            let t = std::time::Instant::now();
-            info!("flushing txstore_db to disk");
-            self.store.txstore_db.flush();
-            info!("flushing txstore_db complete in {:.1?}", t.elapsed());
+    #[cfg(not(feature = "liquid"))]
+    fn process_blocks_spenttxouts(
+        &self,
+        daemon: &Daemon,
+        to_process: Vec<HeaderWork>,
+        chain_tip_height: usize,
+    ) -> Result<()> {
+        let _timer = self.start_timer("process_blocks");
+        debug!("processing {} blocks (spenttxouts)", to_process.len());
 
-            let t = std::time::Instant::now();
-            info!("flushing history_db to disk");
-            self.store.history_db.flush();
-            info!("flushing history_db complete in {:.1?}", t.elapsed());
+        let total_blocks = to_process.len();
+        let processed_blocks = AtomicUsize::new(0);
+        let highest_completed = AtomicUsize::new(0);
 
-            // cache_db receives WAL-disabled writes when --address-search is enabled,
-            // so it needs the same explicit flush to ensure durability.
-            let t = std::time::Instant::now();
-            info!("flushing cache_db to disk");
-            self.store.cache_db.flush();
-            info!("flushing cache_db complete in {:.1?}", t.elapsed());
+        daemon.with_request_pool(|| {
+            to_process.into_par_iter().try_for_each(|work| {
+                self.process_block_spenttxouts(
+                    daemon,
+                    work,
+                    total_blocks,
+                    chain_tip_height,
+                    &processed_blocks,
+                    &highest_completed,
+                )
+            })
+        })?;
 
-            self.flush = DBFlush::Enable;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "liquid"))]
+    fn process_block_spenttxouts(
+        &self,
+        daemon: &Daemon,
+        work: HeaderWork,
+        total_blocks: usize,
+        chain_tip_height: usize,
+        processed_blocks: &AtomicUsize,
+        highest_completed: &AtomicUsize,
+    ) -> Result<()> {
+        let block_entry = fetch_block_entry(daemon, work.entry)?;
+
+        if work.need_txstore {
+            self.store
+                .txstore_db
+                .write_rows(add_block(&block_entry, &self.iconfig), self.flush);
+            self.store
+                .added_blockhashes
+                .write()
+                .unwrap()
+                .insert(*block_entry.entry.hash());
         }
 
-        // Update the synced tip after all db writes are flushed
-        debug!("updating synced tip to {:?}", tip);
-        self.store.txstore_db.put_sync(b"t", &serialize(&tip));
+        if work.need_history {
+            // Need to flatten() because Bitcoin Core returns spenttxouts as a per-tx vector of
+            // prevouts, while the indexer expects a per-block prevouts vector.
+            let previous_txos: Vec<TxOut> = daemon
+                .get_spent_txouts(block_entry.entry.hash())?
+                .into_iter()
+                .flatten()
+                .collect();
+            self.store.history_db.write_rows(
+                index_block(&block_entry, &previous_txos, &self.iconfig),
+                self.flush,
+            );
+            self.store
+                .indexed_blockhashes
+                .write()
+                .unwrap()
+                .insert(*block_entry.entry.hash());
+        }
 
-        // Finally, append the new headers to the in-memory HeaderList.
-        // This will make both the headers and the history entries visible in the public APIs, consistently with each-other.
-        let mut headers = self.store.indexed_headers.write().unwrap();
-        headers.append(new_headers);
-        assert_eq!(tip, *headers.tip());
+        let processed = processed_blocks.fetch_add(1, Ordering::Relaxed) + 1;
+        self.sync_progress
+            .set(processed as f64 / total_blocks.max(1) as f64 * 100.0);
+        let height = block_entry.entry.height();
+        // Workers complete out of order, so this is only a best-effort highest completed height,
+        // not the last contiguous fully-processed best-chain height.
+        let highest = highest_completed
+            .fetch_max(height, Ordering::Relaxed)
+            .max(height);
+        self.sync_height.set(highest as i64);
+        if processed % 6000 == 0 && total_blocks > 20 {
+            info!(
+                "processing blocks {}/{} ({:.1}%)",
+                highest,
+                chain_tip_height,
+                processed as f32 / total_blocks.max(1) as f32 * 100.0
+            );
+        }
 
-        self.tip_metric.set(headers.best_height() as i64);
-
-        Ok(tip)
+        Ok(())
     }
 
     fn add(&self, blocks: &[&BlockEntry]) {
@@ -1221,6 +1352,18 @@ struct HeaderWork {
     entry: HeaderEntry,
     need_txstore: bool,
     need_history: bool,
+}
+
+#[cfg(not(feature = "liquid"))]
+fn fetch_block_entry(daemon: &Daemon, entry: HeaderEntry) -> Result<BlockEntry> {
+    let block = daemon.getblock(entry.hash())?;
+    let txids = block.txdata.iter().map(|tx| tx.compute_txid()).collect();
+    Ok(BlockEntry {
+        size: block.total_size() as u32,
+        txids,
+        block,
+        entry,
+    })
 }
 
 fn add_block(block_entry: &BlockEntry, iconfig: &IndexerConfig) -> Vec<DBRow> {

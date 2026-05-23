@@ -8,12 +8,22 @@ The index is stored as three RocksDB databases:
 
 ### Indexing process
 
-The indexing is done in the two phase, where each can be done concurrently within itself.
-The first phase populates the `txstore` database, the second phase populates the `history` database.
+Electrs indexes blocks using the bitcoind binary REST `block` endpoint,
+storing blocks, transactions, outputs and scripthash funding/spending history.
 
-NOTE: in order to construct the history rows for spending inputs in phase #2, we rely on having the transactions being processed at phase #1, so they can be looked up efficiently (using parallel point lookups).
+There are two indexing modes:
 
-After the indexing is completed, both funding and spending are indexed as independent rows under `H{scripthash}`, so that they can be queried in-order in one go.
+- Default (non-Elements) mode: fetches previous outputs from bitcoind's binary
+  REST `spenttxouts` endpoint. Because indexing does not depend on local RocksDB
+  TXO lookups, blocks can be fully processed in parallel and in any order.
+
+- Legacy mode: used for Elements and Bitcoin Core &lt;v30 (with `--no-spenttxouts`),
+  which do not support `spenttxouts`. Indexing is done in two phases, where each can be
+  done concurrently within itself: first populate `txstore` with block/transaction/output
+  data, then populate `history` by looking up spent TXOs in `txstore`.
+
+After the indexing is completed, both funding and spending are indexed as independent
+rows under `H{scripthash}`, so that they can be queried in-order in one go.
 
 ### `txstore`
 

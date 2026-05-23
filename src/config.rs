@@ -67,7 +67,7 @@ pub struct Config {
     /// Larger buffers = fewer flushes (less CPU) but more RAM usage
     pub db_write_buffer_size_mb: usize,
 
-    /// Number of blocks per batch during initial sync (bitcoind fetch mode).
+    /// Number of blocks per batch during initial sync (for the legacy --no-spenttxouts and Liquid modes).
     /// Larger batches keep more O rows in the write buffer when index() runs lookup_txos(),
     /// improving cache hit rate for outputs spent within the same batch window.
     /// Must stay within db_write_buffer_size_mb to avoid mid-batch flushes.
@@ -79,6 +79,11 @@ pub struct Config {
     /// may never be evicted, giving better read performance at the cost of ~18 MB
     /// per SST file of unbounded memory.
     pub db_cache_index_filter_blocks: bool,
+
+    #[cfg(not(feature = "liquid"))]
+    /// Use Bitcoin Core's REST spenttxouts endpoint to resolve spent outputs during indexing,
+    /// instead of looking them up in RocksDB. Requires Bitcoin Core 30+ with -rest=1.
+    pub use_spenttxouts: bool,
 
     #[cfg(feature = "liquid")]
     pub parent_network: BNetwork,
@@ -278,7 +283,7 @@ impl Config {
              ).arg(
                 Arg::with_name("initial_sync_batch_size")
                     .long("initial-sync-batch-size")
-                    .help("Number of blocks per batch during initial sync. Larger values keep more txo rows in the write buffer during indexing, improving lookup_txos cache hit rate for recently-created outputs.")
+                    .help("Number of blocks per batch during initial sync (for the legacy --no-spenttxouts and Liquid modes). Larger values keep more txo rows in the write buffer during indexing, improving lookup_txos cache hit rate for recently-created outputs.")
                     .takes_value(true)
                     .default_value("250")
              ).arg(
@@ -291,6 +296,13 @@ impl Config {
                     .help("Optional zmq socket address of the bitcoind daemon")
                     .takes_value(true),
             );
+
+        #[cfg(not(feature = "liquid"))]
+        let args = args.arg(
+            Arg::with_name("no_spenttxouts")
+                .long("no-spenttxouts")
+                .help("Use the legacy indexer that does not rely on the spenttxouts REST endpoint. Required for Bitcoin Core before v30."),
+        );
 
         #[cfg(unix)]
         let args = args.arg(
@@ -541,6 +553,8 @@ impl Config {
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
             initial_sync_batch_size: value_t_or_exit!(m, "initial_sync_batch_size", usize),
             db_cache_index_filter_blocks: m.is_present("cache_index_filter_blocks"),
+            #[cfg(not(feature = "liquid"))]
+            use_spenttxouts: !m.is_present("no_spenttxouts"),
             zmq_addr,
 
             #[cfg(feature = "liquid")]
