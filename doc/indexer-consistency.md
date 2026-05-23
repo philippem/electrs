@@ -43,8 +43,8 @@ recovery code.
   that side's rows, recording that the corresponding side of the block is
   complete.
 - A block is fully indexed only when both txstore and history are complete.
-- A block's txstore-side rows required for recovery are written before that
-  block's history-side rows.
+- A block's txstore-side rows required for recovery are written before, or in
+  the same atomic write as, that block's history-side rows.
 
 ### Startup Recovery
 
@@ -75,25 +75,18 @@ recovery code.
 
 ### Storage Durability
 
-- RocksDB may flush each database's memtables before the explicit final flush.
-  Before column families, those implicit flushes are not cross-DB atomic.
-- Early durable rows remain unpublished until `t` and `indexed_headers` advance;
-  restart uses completion markers to skip, finish, or undo them, subject to the
-  separate-DB durability skew caveat below.
-- When bulk writes are disabled, `Indexer::update()` explicitly flushes txstore
-  and history before the final `t` advance is published. This protects
-  published states, but txstore and history are separate RocksDB databases and
-  the flush sequence is not a cross-DB transaction.
+- Txstore and history live in column families in one RocksDB database with
+  atomic flush enabled.
+- RocksDB may flush memtables before `Store::flush_block_writes()` runs. This is
+  safe: atomic flushes publish a coherent sequence-number cutoff across column
+  families and cannot split a write batch.
+- Therefore, a durable history `D` implies the required txstore-side recovery
+  rows are durable from the same or an earlier flush. Early durable rows remain
+  unpublished until `t` and `indexed_headers` advance; restart uses completion
+  markers to skip, finish, or undo them.
+- When bulk writes are disabled, `Store::flush_block_writes()` still atomically
+  flushes txstore and history before the final `t` advance is published.
 - Persisted tip `t` is written synchronously.
-
-## Active Safety Limitations
-
-1. **Separate RocksDB durability skew**
-
-   Txstore and history are separate RocksDB databases. With WAL-disabled bulk
-   writes, a hard crash can theoretically leave a history completion marker
-   durable while the matching txstore rows needed for stale recovery are not
-   durable.
 
 ## Failure And Visibility Matrix
 
@@ -147,18 +140,16 @@ recovery code.
 
    Result: correct.
 
-6. **History completion is durable without txstore recovery data**
+6. **History completion exists without txstore recovery data**
 
-   Txstore-side recovery data is written before history `D`, so this is not the
-   normal write-order crash path. With separate RocksDB databases and
-   WAL-disabled bulk writes, a hard crash can still theoretically leave history
-   `D` durable while txstore recovery rows are not. `Store::open()` hides the
-   block because both markers are required. The next `update()` writes the
-   missing txstore side if the block remains best chain.
+   Txstore-side recovery data is written before, or in the same atomic write as,
+   history `D`, and atomic flush makes a durable history `D` imply the required
+   txstore rows are durable. This state is not expected from normal crash
+   recovery. If it exists anyway, `Store::open()` hides the block because both
+   markers are required. The next `update()` writes the missing txstore side if
+   the block remains best chain.
 
-   Result: correct for best-chain recovery. If the block became stale and the
-   txstore rows needed for stale undo are missing, recovery cannot repair that
-   separate-DB durability violation.
+   Result: correct.
 
 7. **Crash after both sides complete, before final `t` publication**
 

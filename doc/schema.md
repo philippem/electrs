@@ -1,10 +1,11 @@
 # Index Schema
 
-The index is stored as three RocksDB databases:
+The index is stored as a RocksDB database with four column families:
 
-- `txstore`
-- `history`
-- `cache`
+- `default` - global metadata
+- `txstore` - block, transaction and output rows
+- `history` - scripthash history and spend rows
+- `cache` - aggregated script and asset caches
 
 ### Indexing process
 
@@ -24,6 +25,14 @@ There are two indexing modes:
 
 After the indexing is completed, both funding and spending are indexed as independent
 rows under `H{scripthash}`, so that they can be queried in-order in one go.
+
+### `default`
+
+Global metadata rows:
+
+ * `"t" → "{blockhash}"` (the synced tip)
+
+ * `"V" → "{db-version}"` (compatibility marker)
 
 ### `txstore`
 
@@ -45,10 +54,6 @@ Each output results in the following new rows:
 
  * `"O{txid}{vout}" → "{scriptpubkey}{value}"`
  * `"a{funding-address-str}" → ""` (for prefix address search, only saved when `--address-search` is enabled)
-
-When the indexer is synced up to the tip of the chain, the hash of the tip is saved as following:
-
- * `"t" →  "{blockhash}"`
 
 ### `history`
 

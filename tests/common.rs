@@ -152,7 +152,7 @@ impl TestRunner {
             config.daemon_conn_max_age,
         )?);
 
-        let store = Arc::new(Store::open(&config, &metrics, true));
+        let store = Arc::new(Store::open(&config, &metrics));
         let mut indexer = Indexer::open(Arc::clone(&store), &config, &metrics);
         let tip = indexer.update(&daemon)?;
 

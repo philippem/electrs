@@ -46,9 +46,8 @@ pub struct Config {
     pub rpc_logging: RpcLogging,
     pub zmq_addr: Option<SocketAddr>,
 
-    /// RocksDB block cache size in MB (per database)
+    /// RocksDB block cache size in MB (shared across all column families)
     /// Caches decompressed data blocks, plus index and filter blocks (via cache_index_and_filter_blocks).
-    /// Total memory usage = cache_size * 3_databases (txstore, history, cache)
     /// Recommendation: 1024 MB for steady-state; 4096 MB+ for initial sync (L0 SST
     /// files accumulate up to the compaction trigger — their index, filter (Bloom),
     /// and data blocks must fit in this cache). With 10 bits/key bloom filters and
@@ -61,9 +60,9 @@ pub struct Config {
     /// This configures max_background_jobs and thread pools automatically
     pub db_parallelism: usize,
 
-    /// RocksDB write buffer size in MB (per database)
-    /// Each database uses this much RAM for in-memory writes before flushing to disk
-    /// Total RAM usage = write_buffer_size * max_write_buffer_number * 3_databases
+    /// RocksDB write buffer size in MB (per column family)
+    /// Each column family uses this much RAM for in-memory writes before flushing to disk
+    /// Total RAM usage = write_buffer_size * max_write_buffer_number * 3 CFs
     /// Larger buffers = fewer flushes (less CPU) but more RAM usage
     pub db_write_buffer_size_mb: usize,
 
@@ -265,7 +264,7 @@ impl Config {
             ).arg(
                 Arg::with_name("db_block_cache_mb")
                     .long("db-block-cache-mb")
-                    .help("RocksDB block cache size in MB (shared across all databases). Bounds index/filter block memory; use 4096+ for initial sync to avoid table-reader heap growth.")
+                    .help("RocksDB block cache size in MB (shared across all column families). Bounds index/filter block memory; use 4096+ for initial sync to avoid table-reader heap growth.")
                     .takes_value(true)
                     .default_value("24")
             ).arg(
@@ -277,7 +276,7 @@ impl Config {
             ).arg(
                 Arg::with_name("db_write_buffer_size_mb")
                     .long("db-write-buffer-size-mb")
-                    .help("RocksDB write buffer size in MB per database. RAM usage = size * max_write_buffers(2) * 3_databases")
+                    .help("RocksDB write buffer size in MB per column family. RAM usage = size * max_write_buffers(2) * 3 CFs")
                     .takes_value(true)
                     .default_value("128")
              ).arg(

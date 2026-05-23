@@ -35,7 +35,7 @@ use crate::{
     new_index::db_metrics::RocksDbMetrics,
 };
 
-use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
+use crate::new_index::db::{self, DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
 use crate::new_index::fetch::{start_fetcher, BlockEntry};
 
 #[cfg(feature = "liquid")]
@@ -53,7 +53,8 @@ use bitcoin::VarInt;
 const MIN_HISTORY_ITEMS_TO_CACHE: usize = 100;
 
 pub struct Store {
-    // TODO: should be column families
+    db: Arc<rocksdb::DB>,
+    default_db: DB,
     txstore_db: DB,
     history_db: DB,
     cache_db: DB,
@@ -63,30 +64,18 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open(config: &Config, metrics: &Metrics, verify_compat: bool) -> Self {
-        let path = config.db_path.join("newindex");
+    pub fn open(config: &Config, metrics: &Metrics) -> Self {
+        let db = Arc::new(db::open_rocksdb(&config.db_path, config));
+        let default_db = DB::default_cf(Arc::clone(&db));
+        let txstore_db = DB::txstore_cf(Arc::clone(&db));
+        let history_db = DB::history_cf(Arc::clone(&db));
+        let cache_db = DB::cache_cf(Arc::clone(&db));
 
-        // Create a single shared LRU cache for all three DBs. The total size is
-        // --db-block-cache-mb (not multiplied by 3). RocksDB's LRU cache is
-        // thread-safe, so all DBs share one eviction pool. This lets the
-        // txstore (which holds the bulk of the data) claim as much cache as it
-        // needs without being artificially capped at 1/3 of the total.
-        let cache_size_bytes = config.db_block_cache_mb * 1024 * 1024;
-        let shared_cache = rocksdb::Cache::new_lru_cache(cache_size_bytes);
-        debug!(
-            "shared LRU block cache: db_block_cache_mb='{}'",
-            config.db_block_cache_mb
-        );
-
-        let txstore_db = DB::open(&path.join("txstore"), config, verify_compat, &shared_cache);
         let added_blockhashes = load_blockhashes(&txstore_db, &BlockRow::done_filter());
         info!("{} blocks were added", added_blockhashes.len());
 
-        let history_db = DB::open(&path.join("history"), config, verify_compat, &shared_cache);
         let indexed_blockhashes = load_blockhashes(&history_db, &BlockRow::done_filter());
         info!("{} blocks were indexed", indexed_blockhashes.len());
-
-        let cache_db = DB::open(&path.join("cache"), config, verify_compat, &shared_cache);
 
         let db_metrics = Arc::new(RocksDbMetrics::new(&metrics));
         txstore_db.start_stats_exporter(Arc::clone(&db_metrics), "txstore_db");
@@ -94,7 +83,7 @@ impl Store {
         cache_db.start_stats_exporter(Arc::clone(&db_metrics), "cache_db");
 
         // Construct the `HeaderList` from persisted `t` and `D` markers
-        let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
+        let headers = if let Some(tip_hash) = default_db.get(b"t") {
             let tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
             let headers_map = load_blockheaders(&txstore_db);
 
@@ -128,6 +117,8 @@ impl Store {
         };
 
         Store {
+            db,
+            default_db,
             txstore_db,
             history_db,
             cache_db,
@@ -151,6 +142,15 @@ impl Store {
 
     pub fn headers(&self) -> RwLockReadGuard<'_, HeaderList> {
         self.indexed_headers.read().unwrap()
+    }
+
+    fn flush_block_writes(&self) {
+        let cfs = [self.txstore_db.cf(), self.history_db.cf()];
+        self.db.flush_cfs_opt(&cfs, &Default::default()).unwrap();
+    }
+
+    fn update_tip(&self, tip: &BlockHash) {
+        self.default_db.put_sync(b"t", &serialize(tip));
     }
 }
 
@@ -383,9 +383,7 @@ impl Indexer {
 
             // Persist the common ancestor tip before deleting reorged history rows. If electrs crashes before
             // reorg cleanup completes, the next startup will recover from this tip and complete the cleanup.
-            self.store
-                .txstore_db
-                .put_sync(b"t", &serialize(&common_ancestor));
+            self.store.update_tip(&common_ancestor);
 
             // Reconstruct the reorged blocks locally, then undo their history index db rows.
             // The txstore db rows are kept for reorged blocks/transactions.
@@ -404,28 +402,16 @@ impl Indexer {
 
         if let DBFlush::Disable = self.flush {
             let t = std::time::Instant::now();
-            info!("flushing txstore_db to disk");
-            self.store.txstore_db.flush();
-            info!("flushing txstore_db complete in {:.1?}", t.elapsed());
-
-            let t = std::time::Instant::now();
-            info!("flushing history_db to disk");
-            self.store.history_db.flush();
-            info!("flushing history_db complete in {:.1?}", t.elapsed());
-
-            // cache_db receives WAL-disabled writes when --address-search is enabled,
-            // so it needs the same explicit flush to ensure durability.
-            let t = std::time::Instant::now();
-            info!("flushing cache_db to disk");
-            self.store.cache_db.flush();
-            info!("flushing cache_db complete in {:.1?}", t.elapsed());
+            info!("flushing block writes to disk");
+            self.store.flush_block_writes();
+            info!("flushing block writes complete in {:.1?}", t.elapsed());
 
             self.flush = DBFlush::Enable;
         }
 
         // Update the synced tip after all db writes are flushed
         debug!("updating synced tip to {:?}", tip);
-        self.store.txstore_db.put_sync(b"t", &serialize(&tip));
+        self.store.update_tip(&tip);
 
         // Finally, append the new headers to the in-memory HeaderList.
         // This will make both the headers and the history entries visible in the public APIs, consistently with each-other.
