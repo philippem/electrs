@@ -56,9 +56,9 @@ recovery code.
 
 ### Stale Cleanup And Reorg Publication
 
-- Live reorg cleanup and startup stale cleanup both delete stale history rows
-  through `undo_index()` after reconstructing `HeaderEntry`s from local txstore
-  `B` rows and fetching stale block contents from the current daemon.
+- Live reorg cleanup and startup stale cleanup both reconstruct stale blocks
+  and spent prevouts from local RocksDB data, then delete stale history rows
+  through `process_stale()` and `undo_index()`.
 - On reorg, the live `HeaderList` tip and persisted `t` are rolled back to the
   common ancestor before stale history rows are undone and replacement rows are
   indexed in the staging area.
@@ -88,16 +88,7 @@ recovery code.
 
 ## Active Safety Limitations
 
-1. **Current-daemon stale-block availability**
-
-   Stale cleanup loads stale headers from local txstore `B` rows, but it fetches
-   stale block contents from the daemon currently connected to Electrs. In a
-   multiple-backend deployment, the original daemon that served a stale block
-   may no longer be reachable, and the current daemon may never have had that
-   block. In that case, Electrs cannot build the stale-history deletions, so
-   recovery cannot complete.
-
-2. **Separate RocksDB durability skew**
+1. **Separate RocksDB durability skew**
 
    Txstore and history are separate RocksDB databases. With WAL-disabled bulk
    writes, a hard crash can theoretically leave a history completion marker
@@ -223,10 +214,9 @@ recovery code.
     `indexed_headers` chain. Because startup recovery runs before live reorg
     rollback, any live-reorg stale suffix is still in `indexed_headers` and is
     left for the normal reorg path. Any other history-complete block is
-    stale, its header is loaded from txstore `B`, and its block contents are
-    fetched from the current daemon for undo.
+    stale and is reconstructed from local txstore rows for undo.
 
-    Result: correct if the current daemon can serve the stale block contents.
+    Result: correct.
 
 13. **Crash during initial sync with no published `t`, then indexed blocks
     become stale**
@@ -235,7 +225,7 @@ recovery code.
     the current best chain from genesis. History-complete blocks not in that
     chain are found by startup stale recovery and undone.
 
-    Result: correct if the current daemon can serve the stale block contents.
+    Result: correct.
 
 14. **Startup recovery finds no new headers but stale history exists**
 
@@ -244,7 +234,7 @@ recovery code.
     sweep still runs once and undoes history-complete blocks outside
     `indexed_headers`.
 
-    Result: correct if the current daemon can serve the stale block contents.
+    Result: correct.
 
 ### Live Reorg And Stale Cleanup
 
@@ -254,8 +244,7 @@ recovery code.
     the old persisted `t` plus completion markers, and the next `update()`
     redetects the reorg against bitcoind.
 
-    Result: correct if the current daemon can serve any stale block contents
-    needed for undo.
+    Result: correct.
 
 16. **Crash after persisting rollback, before stale rows are deleted**
 
@@ -263,8 +252,7 @@ recovery code.
     public visibility. The next startup's first `update()` sees stale
     history-complete blocks outside the target chain and undoes them.
 
-    Result: correct if the current daemon can serve any stale block contents
-    needed for undo.
+    Result: correct.
 
 17. **Public API query during stale cleanup**
 
@@ -280,8 +268,7 @@ recovery code.
     stale history `D` remains and startup recovery undoes it again. If the delete
     batch survived, the stale `D` is gone and there is nothing left to undo.
 
-    Result: correct, subject to current-daemon stale-block availability if
-    deletion must be retried.
+    Result: correct.
 
 19. **Crash after stale deletion, before the history flush**
 
@@ -289,8 +276,7 @@ recovery code.
     The startup sweep handles both: stale `D` present means undo again; stale `D`
     absent means no action.
 
-    Result: correct, subject to current-daemon stale-block availability if
-    deletion must be retried.
+    Result: correct.
 
 20. **Crash after stale deletion flush, before replacement blocks are indexed**
 
@@ -322,8 +308,7 @@ recovery code.
     `new_headers` is empty. The normal stale path pops the suffix, persists the
     common ancestor tip, undoes stale rows, and republishes.
 
-    Result: correct if the current daemon can serve any stale block contents
-    needed for undo.
+    Result: correct.
 
 ### Daemon And Retry Failures
 
@@ -346,14 +331,12 @@ recovery code.
 
 26. **Current daemon cannot serve stale block during stale undo**
 
-    Stale cleanup needs stale block contents from the current daemon before it
-    can build history deletions. If no reachable daemon can serve the stale
-    block, cleanup returns an error before history deletion is flushed and before
-    the final tip is published. The pending startup recovery flag remains set and
-    a process restart recreates it, but retry cannot make progress without that
-    missing external block.
+    Stale cleanup reconstructs stale blocks and spent prevouts from local
+    RocksDB data. It does not need the current daemon to serve stale block
+    contents, so a multiple-backend setup can still undo stale history even if
+    the daemon that originally served the stale block is no longer reachable.
 
-    Result: unresolved safety limitation.
+    Result: correct.
 
 27. **In-process retry after startup sweep succeeds but later processing fails**
 
