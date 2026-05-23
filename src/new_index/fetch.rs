@@ -2,6 +2,7 @@ use std::sync::mpsc::Receiver;
 use std::thread;
 
 use electrs_macros::trace;
+use itertools::Itertools;
 
 use crate::chain::{Block, BlockHash, Txid};
 use crate::daemon::Daemon;
@@ -59,7 +60,8 @@ pub fn start_fetcher(
         spawn_thread("bitcoind_fetcher", move || {
             let mut fetcher_count = 0;
             let total_blocks_fetched = new_headers.len();
-            for entries in new_headers.chunks(batch_size) {
+            for entries in &new_headers.into_iter().chunks(batch_size) {
+                let entries: Vec<_> = entries.collect();
                 if fetcher_count % 50 == 0 && total_blocks_fetched >= 50 {
                     let batch_height = entries.last().map(|e| e.height()).unwrap_or(0);
                     info!(
@@ -75,25 +77,23 @@ pub fn start_fetcher(
                 let blocks = daemon
                     .getblocks(&blockhashes)
                     .expect("failed to get blocks from bitcoind");
-                assert_eq!(blocks.len(), entries.len());
                 let block_entries: Vec<BlockEntry> = blocks
                     .into_iter()
-                    .zip(entries)
+                    .zip_eq(entries)
                     .map(|(block, entry)| {
                         let txids = block.txdata.iter().map(|tx| tx.compute_txid()).collect();
                         BlockEntry {
-                            entry: entry.clone(), // TODO: remove this clone()
+                            entry,
                             size: block.total_size() as u32,
                             txids,
                             block,
                         }
                     })
                     .collect();
-                assert_eq!(block_entries.len(), entries.len());
+                log::debug!("last fetch {:?}", block_entries.last().map(|b| &b.entry));
                 sender
                     .send(block_entries)
                     .expect("failed to send fetched blocks");
-                log::debug!("last fetch {:?}", entries.last());
             }
         }),
     ))

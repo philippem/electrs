@@ -361,7 +361,10 @@ impl Indexer {
                 self.iconfig.block_batch_size,
                 chain_tip_height,
             )?
-            .map(|blocks| self.undo_index(&blocks));
+            .map(|blocks| {
+                let block_refs = blocks.iter().collect::<Vec<_>>();
+                self.undo_index(&block_refs);
+            });
         }
 
         // Single-pass: add to txstore and index to history in the same per-batch loop.
@@ -412,7 +415,6 @@ impl Indexer {
                 .zip_eq(to_process_batch.iter())
                 .filter(|(_, work)| work.need_txstore)
                 .map(|(block, _)| block)
-                .cloned()
                 .collect();
 
             // Index blocks not yet in history (O rows for to_add are now in the write buffer)
@@ -421,7 +423,6 @@ impl Indexer {
                 .zip_eq(to_process_batch.iter())
                 .filter(|(_, work)| work.need_history)
                 .map(|(block, _)| block)
-                .cloned()
                 .collect();
 
             if !to_add.is_empty() || !to_index.is_empty() {
@@ -485,7 +486,7 @@ impl Indexer {
         Ok(tip)
     }
 
-    fn add(&self, blocks: &[BlockEntry]) {
+    fn add(&self, blocks: &[&BlockEntry]) {
         // TODO: skip orphaned blocks?
         let rows = {
             let _timer = self.start_timer("add_process");
@@ -507,7 +508,7 @@ impl Indexer {
             .extend(blocks.iter().map(|b| b.entry.hash()));
     }
 
-    fn index(&self, blocks: &[BlockEntry]) {
+    fn index(&self, blocks: &[&BlockEntry]) {
         self.store
             .history_db
             .write_rows(self._index(blocks), self.flush);
@@ -522,7 +523,7 @@ impl Indexer {
     //
     // This does *not* remove any txstore db entries, which are intentionally kept
     // even for reorged blocks.
-    fn undo_index(&self, blocks: &[BlockEntry]) {
+    fn undo_index(&self, blocks: &[&BlockEntry]) {
         self.store
             .history_db
             .delete_rows(self._index(blocks), self.flush);
@@ -538,7 +539,7 @@ impl Indexer {
         }
     }
 
-    fn _index(&self, blocks: &[BlockEntry]) -> Vec<DBRow> {
+    fn _index(&self, blocks: &[&BlockEntry]) -> Vec<DBRow> {
         let previous_txos_by_block: Vec<Vec<TxOut>> = {
             let _timer = self.start_timer("index_lookup");
             let previous_outpoints_by_block = get_prev_outpoints_by_block(blocks);
@@ -1266,7 +1267,7 @@ fn add_transaction(txid: Txid, tx: &Transaction, rows: &mut Vec<DBRow>, iconfig:
     }
 }
 
-fn get_prev_outpoints_by_block(block_entries: &[BlockEntry]) -> Vec<Vec<OutPoint>> {
+fn get_prev_outpoints_by_block(block_entries: &[&BlockEntry]) -> Vec<Vec<OutPoint>> {
     block_entries
         .iter()
         .map(|b| {
