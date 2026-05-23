@@ -85,28 +85,36 @@ impl Store {
         history_db.start_stats_exporter(Arc::clone(&db_metrics), "history_db");
         cache_db.start_stats_exporter(Arc::clone(&db_metrics), "cache_db");
 
+        // Construct the `HeaderList` from persisted `t` and `D` markers
         let headers = if let Some(tip_hash) = txstore_db.get(b"t") {
-            let mut tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
+            let tip_hash = deserialize(&tip_hash).expect("invalid chain tip in `t`");
             let headers_map = load_blockheaders(&txstore_db);
 
-            // Move the tip back until we reach a block that is indexed in the history db.
-            // It is possible for the tip recorded under the db "t" key to be un-indexed if electrs
-            // shuts down during reorg handling. Normally this wouldn't matter because the non-indexed
-            // block would be stale, but it could matter if the chain later re-orged back to
-            // include the previously stale block because more blocks were built on top of it.
-            // Without this, the stale-then-not-stale block(s) would not get re-indexed correctly.
-            while !indexed_blockhashes.contains(&tip_hash) {
-                tip_hash = headers_map
-                    .get(&tip_hash)
-                    .expect("invalid header chain")
-                    .prev_blockhash;
-            }
             info!(
                 "{} headers were loaded, tip at {:?}",
                 headers_map.len(),
                 tip_hash
             );
-            HeaderList::new(headers_map, tip_hash)
+            // First build and validate the header chain by walking backwards from `t`.
+            let mut headers = HeaderList::new(headers_map, tip_hash);
+
+            // Then, walk forward from genesis and roll back to the last block
+            // with both completion markers. Under normal publication rules this
+            // should keep the whole `t` chain. The trim is a fail-closed guard
+            // if `t` and completion markers disagree.
+            let fully_indexed_blockhashes: HashSet<_> = added_blockhashes
+                .intersection(&indexed_blockhashes)
+                .copied()
+                .collect();
+            let fully_indexed_len = headers
+                .iter()
+                .take_while(|entry| fully_indexed_blockhashes.contains(entry.hash()))
+                .count();
+            let _ = headers.pop(fully_indexed_len);
+            // The popped headers are only hidden from the Store::open() midstate.
+            // Their rows remain in RocksDB. The first daemon-aware update() can
+            // finish still-best work or undo hidden stale history.
+            headers
         } else {
             HeaderList::empty()
         };
@@ -204,6 +212,8 @@ pub struct Indexer {
     tip_metric: Gauge,
     sync_height: Gauge,
     sync_progress: prometheus::Gauge,
+    // Always true initially, cleared after the first update() completes the startup stale sweep
+    pending_startup_recovery: bool,
 }
 
 struct IndexerConfig {
@@ -258,6 +268,7 @@ impl Indexer {
                 "initial_sync_progress_pct",
                 "Initial sync progress as a percentage of the best known chain height",
             )),
+            pending_startup_recovery: true,
         }
     }
 
@@ -331,6 +342,15 @@ impl Indexer {
         let (new_headers, reorged_since) = self.get_new_headers(&daemon, &tip)?;
         let chain_tip_height = new_headers.last().map(|h| h.height()).unwrap_or(0);
 
+        // Run a one-time recovery on the first startup to sweep stale history db entries
+        // from blocks not part of the `indexed_headers` chain loaded from DB or the `new_headers`.
+        // This can be necessary if electrs crashes while processing a reorg, or if it partially
+        // processed new blocks that became stale while electrs was down.
+        if self.pending_startup_recovery {
+            self.stale_history_startup_recovery(&daemon, &new_headers, chain_tip_height)?;
+            self.pending_startup_recovery = false;
+        }
+
         // Handle reorgs by undoing the reorged (stale) blocks first
         if let Some(reorged_since) = reorged_since {
             // Remove reorged headers from the in-memory HeaderList.
@@ -338,7 +358,7 @@ impl Indexer {
             // (even before the rows are deleted below), since they reference block heights that will no longer exist.
             // This ensures consistency - it is not possible for blocks to be available (e.g. in GET /blocks/tip or /block/:hash)
             // without the corresponding history entries for these blocks (e.g. in GET /address/:address/txs), or vice-versa.
-            let mut reorged_headers = self
+            let (reorged_headers, common_ancestor) = self
                 .store
                 .indexed_headers
                 .write()
@@ -353,11 +373,11 @@ impl Indexer {
                 reorged_since,
             );
 
-            // Reorged blocks are undone in chunks of 100, processed in serial, each as an atomic batch.
-            // Reverse them so that chunks closest to the chain tip are processed first,
-            // which is necessary to properly recover from crashes during reorg handling.
-            // Also see the comment under `Store::open()`.
-            reorged_headers.reverse();
+            // Persist the common ancestor tip before deleting reorged history rows. If electrs crashes before
+            // reorg cleanup completes, the next startup will recover from this tip and complete the cleanup.
+            self.store
+                .txstore_db
+                .put_sync(b"t", &serialize(&common_ancestor));
 
             // Fetch the reorged blocks, then undo their history index db rows.
             // The txstore db rows are kept for reorged blocks/transactions.
@@ -371,6 +391,9 @@ impl Indexer {
                 let block_refs = blocks.iter().collect::<Vec<_>>();
                 self.undo_index(&block_refs);
             });
+
+            // Flush deletions prior to processing new blocks
+            self.store.history_db.flush();
         }
 
         self.process_blocks(&daemon, &new_headers, chain_tip_height)?;
@@ -414,6 +437,52 @@ impl Indexer {
         self.tip_metric.set(headers.best_height() as i64);
 
         Ok(tip)
+    }
+
+    fn stale_history_startup_recovery(
+        &self,
+        daemon: &Daemon,
+        new_headers: &[HeaderEntry],
+        chain_tip_height: usize,
+    ) -> Result<()> {
+        // Store::open() has no daemon view, so it only finds a safe chain tip that's fully
+        // indexed but does not attempt to clean up stale history db entries. On the first
+        // update(), we can use bitcoind's best chain to determine which blocks are still part
+        // of the best chain and clean up any stale history entries for blocks that aren't.
+        let stale_blockhashes: Vec<_> = {
+            let to_keep_blockhashes = new_headers
+                .iter()
+                .chain(self.store.indexed_headers.read().unwrap().iter())
+                .map(|entry| *entry.hash())
+                .collect::<HashSet<_>>();
+            let indexed_blockhashes = self.store.indexed_blockhashes.read().unwrap();
+
+            indexed_blockhashes
+                .difference(&to_keep_blockhashes)
+                .copied()
+                .collect()
+        };
+
+        if !stale_blockhashes.is_empty() {
+            let stale_headers: Vec<_> = stale_blockhashes
+                .iter()
+                .map(|hash| load_header_entry(&self.store.txstore_db, hash))
+                .collect();
+            info!("cleaning up {} stale blocks", stale_headers.len());
+            start_fetcher(
+                daemon,
+                stale_headers,
+                self.iconfig.block_batch_size,
+                chain_tip_height,
+            )?
+            .map(|blocks| {
+                let block_refs = blocks.iter().collect::<Vec<_>>();
+                self.undo_index(&block_refs);
+            });
+            self.store.history_db.flush();
+        }
+
+        Ok(())
     }
 
     fn process_blocks(
@@ -1342,10 +1411,19 @@ fn load_blockheaders(db: &DB) -> HashMap<BlockHash, BlockHeader> {
         .map(BlockRow::from_row)
         .map(|r| {
             let key: BlockHash = deserialize(&r.key.hash).expect("failed to parse BlockHash");
-            let value: BlockHeader = deserialize(&r.value).expect("failed to parse BlockHeader");
-            (key, value)
+            let (_height, header_bytes): (u32, Bytes) =
+                bincode::deserialize_little(&r.value).expect("failed to parse stored BlockHeader");
+            let header = deserialize(&header_bytes).expect("failed to parse stored BlockHeader");
+            (key, header)
         })
         .collect()
+}
+
+fn load_header_entry(db: &DB, hash: &BlockHash) -> HeaderEntry {
+    let row = db
+        .get(&BlockRow::header_key(full_hash(&hash[..])))
+        .unwrap_or_else(|| panic!("missing block header row for {}", hash));
+    BlockRow::header_entry_from_value(hash, &row)
 }
 
 struct HeaderWork {
@@ -1383,7 +1461,7 @@ fn add_block(block_entry: &BlockEntry, iconfig: &IndexerConfig) -> Vec<DBRow> {
     }
 
     // persist block headers', block txids' and metadata rows:
-    //      B{blockhash} → {header}
+    //      B{blockhash} → {height, header}
     //      X{blockhash} → {txid1}...{txidN}
     //      M{blockhash} → {tx_count}{size}{weight}
     rows.push(BlockRow::new_txids(blockhash, &block_entry.txids).into_row());
@@ -1721,12 +1799,14 @@ struct BlockRow {
 
 impl BlockRow {
     fn new_header(block_entry: &BlockEntry) -> BlockRow {
+        let height = block_entry.entry.height() as u32;
+        let header_bytes = serialize(&block_entry.block.header);
         BlockRow {
             key: BlockKey {
                 code: b'B',
                 hash: full_hash(&block_entry.entry.hash()[..]),
             },
-            value: serialize(&block_entry.block.header),
+            value: bincode::serialize_little(&(height, header_bytes)).unwrap(),
         }
     }
 
@@ -1755,6 +1835,10 @@ impl BlockRow {
         b"B".to_vec()
     }
 
+    fn header_key(hash: FullHash) -> Bytes {
+        [b"B", &hash[..]].concat()
+    }
+
     fn txids_key(hash: FullHash) -> Bytes {
         [b"X", &hash[..]].concat()
     }
@@ -1779,6 +1863,13 @@ impl BlockRow {
             key: bincode::deserialize_little(&row.key).unwrap(),
             value: row.value,
         }
+    }
+
+    fn header_entry_from_value(hash: &BlockHash, value: &[u8]) -> HeaderEntry {
+        let (height, header_bytes): (u32, Bytes) =
+            bincode::deserialize_little(value).expect("failed to parse stored BlockHeader");
+        let header = deserialize(&header_bytes).expect("failed to parse stored BlockHeader");
+        HeaderEntry::new(height as usize, *hash, header)
     }
 }
 

@@ -29,7 +29,7 @@ rows under `H{scripthash}`, so that they can be queried in-order in one go.
 
 Each block results in the following new rows:
 
- * `"B{blockhash}" → "{header}"`
+ * `"B{blockhash}" → "{height, header}"`
 
  * `"X{blockhash}" → "{txids}"` (list of txids included in the block)
 
