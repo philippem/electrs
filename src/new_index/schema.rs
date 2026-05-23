@@ -524,23 +524,32 @@ impl Indexer {
     }
 
     fn _index(&self, blocks: &[BlockEntry]) -> Vec<DBRow> {
-        let previous_txos_map = {
+        let previous_txos_by_block: Vec<Vec<TxOut>> = {
             let _timer = self.start_timer("index_lookup");
-            lookup_txos(&self.store.txstore_db, get_previous_txos(blocks)).unwrap()
+            let previous_outpoints_by_block = get_prev_outpoints_by_block(blocks);
+            // Use a multi_get to fetch previous txos for the whole block batch as a flat vector,
+            // then split it back into the per-block vectors expected by the indexer.
+            let mut previous_txos = lookup_txos(
+                &self.store.txstore_db,
+                previous_outpoints_by_block.iter().flatten(),
+            )
+            .unwrap()
+            .into_iter();
+            previous_outpoints_by_block
+                .iter()
+                .map(|outpoints| previous_txos.by_ref().take(outpoints.len()).collect())
+                .collect()
         };
-        let rows = {
-            let _timer = self.start_timer("index_process");
-            let added_blockhashes = self.store.added_blockhashes.read().unwrap();
-            for b in blocks {
-                let blockhash = b.entry.hash();
-                // TODO: replace by lookup into txstore_db?
-                if !added_blockhashes.contains(blockhash) {
-                    panic!("cannot index block {} (missing from store)", blockhash);
-                }
+        let _timer = self.start_timer("index_process");
+        let added_blockhashes = self.store.added_blockhashes.read().unwrap();
+        for b in blocks {
+            let blockhash = b.entry.hash();
+            // TODO: replace by lookup into txstore_db?
+            if !added_blockhashes.contains(blockhash) {
+                panic!("cannot index block {} (missing from store)", blockhash);
             }
-            index_blocks(blocks, &previous_txos_map, &self.iconfig)
-        };
-        rows
+        }
+        index_blocks(blocks, &previous_txos_by_block, &self.iconfig)
     }
 }
 
@@ -1061,9 +1070,10 @@ impl ChainQuery {
         lookup_txo(&self.store.txstore_db, outpoint)
     }
 
-    pub fn lookup_txos(&self, outpoints: BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
+    pub fn lookup_txos(&self, outpoints: Vec<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
         let _timer = self.start_timer("lookup_txos");
-        lookup_txos(&self.store.txstore_db, outpoints)
+        let txos = lookup_txos(&self.store.txstore_db, &outpoints)?;
+        Ok(outpoints.into_iter().zip_eq(txos).collect())
     }
 
     pub fn lookup_spend(&self, outpoint: &OutPoint) -> Option<SpendingInput> {
@@ -1232,30 +1242,35 @@ fn add_transaction(txid: Txid, tx: &Transaction, rows: &mut Vec<DBRow>, iconfig:
     }
 }
 
-fn get_previous_txos(block_entries: &[BlockEntry]) -> BTreeSet<OutPoint> {
+fn get_prev_outpoints_by_block(block_entries: &[BlockEntry]) -> Vec<Vec<OutPoint>> {
     block_entries
         .iter()
-        .flat_map(|b| b.block.txdata.iter())
-        .flat_map(|tx| {
-            tx.input
+        .map(|b| {
+            b.block
+                .txdata
                 .iter()
-                .filter(|txin| has_prevout(txin))
-                .map(|txin| txin.previous_output)
+                .flat_map(|tx| {
+                    tx.input
+                        .iter()
+                        .filter(|txin| has_prevout(txin))
+                        .map(|txin| txin.previous_output)
+                })
+                .collect()
         })
         .collect()
 }
 
-fn lookup_txos(txstore_db: &DB, outpoints: BTreeSet<OutPoint>) -> Result<HashMap<OutPoint, TxOut>> {
-    let keys = outpoints.iter().map(TxOutRow::key).collect::<Vec<_>>();
+fn lookup_txos<'a, I>(txstore_db: &DB, outpoints: I) -> Result<Vec<TxOut>>
+where
+    I: IntoIterator<Item = &'a OutPoint>,
+{
+    let keys = outpoints.into_iter().map(TxOutRow::key).collect::<Vec<_>>();
     txstore_db
         .multi_get(keys)
         .into_iter()
-        .zip(outpoints)
-        .map(|(res, outpoint)| {
-            let txo = res
-                .unwrap()
-                .ok_or_else(|| format!("missing txo {}", outpoint))?;
-            Ok((outpoint, deserialize(&txo).expect("failed to parse TxOut")))
+        .map(|res| {
+            let txo = res.unwrap().chain_err(|| "missing txo")?;
+            Ok(deserialize(&txo).expect("failed to parse TxOut"))
         })
         .collect()
 }
@@ -1285,19 +1300,33 @@ pub fn lookup_confirmations(
 
 fn index_blocks(
     block_entries: &[BlockEntry],
-    previous_txos_map: &HashMap<OutPoint, TxOut>,
+    previous_txos_by_block: &[Vec<TxOut>],
     iconfig: &IndexerConfig,
 ) -> Vec<DBRow> {
     block_entries
         .par_iter() // serialization is CPU-intensive
-        .map(|b| {
+        .zip_eq(previous_txos_by_block)
+        .map(|(b, previous_txos)| {
             assert_eq!(b.txids.len(), b.block.txdata.len());
             let mut rows = vec![];
             let height = b.entry.height() as u32;
+            let mut previous_txos = previous_txos.iter();
             for (tx, txid) in b.block.txdata.iter().zip(b.txids.iter()) {
                 let txid_hash = full_hash(&txid[..]);
-                index_transaction(tx, txid_hash, height, previous_txos_map, &mut rows, iconfig);
+                index_transaction(
+                    tx,
+                    txid_hash,
+                    height,
+                    &mut previous_txos,
+                    &mut rows,
+                    iconfig,
+                );
             }
+            assert!(
+                previous_txos.next().is_none(),
+                "unexpected trailing previous txos for block {}",
+                b.entry.hash()
+            );
             rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row()); // mark block as "indexed"
             rows
         })
@@ -1310,7 +1339,7 @@ fn index_transaction(
     tx: &Transaction,
     txid: FullHash,
     confirmed_height: u32,
-    previous_txos_map: &HashMap<OutPoint, TxOut>,
+    previous_txos: &mut std::slice::Iter<'_, TxOut>,
     rows: &mut Vec<DBRow>,
     iconfig: &IndexerConfig,
 ) {
@@ -1341,8 +1370,8 @@ fn index_transaction(
         if !has_prevout(txi) {
             continue;
         }
-        let prev_txo = previous_txos_map
-            .get(&txi.previous_output)
+        let prev_txo = previous_txos
+            .next()
             .unwrap_or_else(|| panic!("missing previous txo {}", txi.previous_output));
 
         let history = TxHistoryRow::new(
