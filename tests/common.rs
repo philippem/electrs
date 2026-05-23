@@ -1,6 +1,6 @@
+use std::net;
 use std::str::FromStr;
 use std::sync::{Arc, Once, RwLock};
-use std::{env, net};
 
 use log::LevelFilter;
 use stderrlog::StdErrLog;
@@ -24,7 +24,7 @@ use electrs::{
     daemon::Daemon,
     electrum::RPC as ElectrumRPC,
     metrics::Metrics,
-    new_index::{ChainQuery, FetchFrom, Indexer, Mempool, Query, Store},
+    new_index::{ChainQuery, Indexer, Mempool, Query, Store},
     rest,
     signal::Waiter,
 };
@@ -95,7 +95,6 @@ impl TestRunner {
             daemon_dir: daemon_subdir.clone(),
             daemon_parallelism: 3,
             daemon_conn_max_age: None,
-            blocks_dir: daemon_subdir.join("blocks"),
             daemon_rpc_addr: params.rpc_socket.into(),
             daemon_rpc_fallback_addr: None,
             cookie: None,
@@ -104,7 +103,6 @@ impl TestRunner {
             http_addr: rand_available_addr(),
             http_socket_file: None, // XXX test with socket file or tcp?
             monitoring_addr: rand_available_addr(),
-            jsonrpc_import: false,
             light_mode: false,
             address_search: true,
             index_unspendables: false,
@@ -141,7 +139,6 @@ impl TestRunner {
 
         let daemon = Arc::new(Daemon::new(
             &config.daemon_dir,
-            &config.blocks_dir,
             config.daemon_rpc_addr,
             config.daemon_rpc_fallback_addr,
             config.daemon_parallelism,
@@ -153,21 +150,8 @@ impl TestRunner {
         )?);
 
         let store = Arc::new(Store::open(&config, &metrics, true));
-
-        let fetch_from = if !env::var("JSONRPC_IMPORT").is_ok() && !cfg!(feature = "liquid") {
-            // run the initial indexing from the blk files then switch to using the jsonrpc,
-            // similarly to how electrs is typically used.
-            FetchFrom::BlkFiles
-        } else {
-            // when JSONRPC_IMPORT is set, use the jsonrpc for the initial indexing too.
-            // this runs faster on small regtest chains and can be useful for quicker local development iteration.
-            // this is also used on liquid regtest, which currently fails to parse the BlkFiles due to the magic bytes
-            FetchFrom::Bitcoind
-        };
-
-        let mut indexer = Indexer::open(Arc::clone(&store), fetch_from, &config, &metrics);
+        let mut indexer = Indexer::open(Arc::clone(&store), &config, &metrics);
         let tip = indexer.update(&daemon)?;
-        indexer.fetch_from(FetchFrom::Bitcoind);
 
         let chain = Arc::new(ChainQuery::new(
             Arc::clone(&store),

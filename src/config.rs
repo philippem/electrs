@@ -24,7 +24,6 @@ pub struct Config {
     pub network_type: Network,
     pub db_path: PathBuf,
     pub daemon_dir: PathBuf,
-    pub blocks_dir: PathBuf,
     pub daemon_rpc_addr: SocketAddr,
     pub daemon_rpc_fallback_addr: Option<SocketAddr>,
     pub daemon_parallelism: usize,
@@ -35,7 +34,6 @@ pub struct Config {
     pub http_addr: SocketAddr,
     pub http_socket_file: Option<PathBuf>,
     pub monitoring_addr: SocketAddr,
-    pub jsonrpc_import: bool,
     pub light_mode: bool,
     pub address_search: bool,
     pub index_unspendables: bool,
@@ -135,12 +133,6 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("blocks_dir")
-                    .long("blocks-dir")
-                    .help("Analogous to bitcoind's -blocksdir option, this specifies the directory containing the raw blocks files (blk*.dat) (default: ~/.bitcoin/blocks/)")
-                    .takes_value(true),
-            )
-            .arg(
                 Arg::with_name("cookie")
                     .long("cookie")
                     .help("JSONRPC authentication cookie ('USER:PASSWORD', default: read from ~/.bitcoin/.cookie)")
@@ -201,11 +193,6 @@ impl Config {
                     .long("monitoring-addr")
                     .help("Prometheus monitoring 'addr:port' to listen on (default: 127.0.0.1:4224 for mainnet, 127.0.0.1:14224 for testnet3 and 127.0.0.1:44224 for testnet4 and 127.0.0.1:24224 for regtest)")
                     .takes_value(true),
-            )
-            .arg(
-                Arg::with_name("jsonrpc_import")
-                    .long("jsonrpc-import")
-                    .help("Use JSONRPC instead of directly importing blk*.dat files. Useful for remote full node or low memory system"),
             )
             .arg(
                 Arg::with_name("light_mode")
@@ -499,10 +486,6 @@ impl Config {
         if let Some(network_subdir) = get_network_subdir(network_type) {
             daemon_dir.push(network_subdir);
         }
-        let blocks_dir = m
-            .value_of("blocks_dir")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| daemon_dir.join("blocks"));
         let cookie = m.value_of("cookie").map(|s| s.to_owned());
 
         let electrum_banner = m.value_of("electrum_banner").map_or_else(
@@ -531,7 +514,6 @@ impl Config {
             network_type,
             db_path,
             daemon_dir,
-            blocks_dir,
             daemon_rpc_addr,
             daemon_rpc_fallback_addr,
             daemon_parallelism: value_t_or_exit!(m, "daemon_parallelism", usize),
@@ -555,7 +537,6 @@ impl Config {
             http_addr,
             http_socket_file,
             monitoring_addr,
-            jsonrpc_import: m.is_present("jsonrpc_import"),
             light_mode: m.is_present("light_mode"),
             address_search: m.is_present("address_search"),
             index_unspendables: m.is_present("index_unspendables"),

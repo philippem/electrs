@@ -1,13 +1,12 @@
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
-use std::convert::TryFrom;
+use std::env;
 use std::io::{BufRead, BufReader, Lines, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-use std::{env, fs, io};
 
 use base64::prelude::{Engine, BASE64_STANDARD};
 #[cfg(feature = "liquid")]
@@ -20,6 +19,8 @@ use serde_json::{from_str, from_value, Value};
 use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
 #[cfg(feature = "liquid")]
 use elements::encode::{deserialize, serialize_hex};
+#[cfg(not(feature = "liquid"))]
+use rayon::iter::IntoParallelRefIterator;
 
 use electrs_macros::trace;
 
@@ -633,7 +634,6 @@ impl Counter {
 
 pub struct Daemon {
     daemon_dir: PathBuf,
-    blocks_dir: PathBuf,
     network: Network,
     connection_config: ConnectionConfig,
     conn: Mutex<Connection>,
@@ -656,7 +656,6 @@ pub struct Daemon {
 impl Daemon {
     pub fn new(
         daemon_dir: &PathBuf,
-        blocks_dir: &PathBuf,
         daemon_rpc_addr: SocketAddr,
         daemon_rpc_fallback_addr: Option<SocketAddr>,
         daemon_parallelism: usize,
@@ -676,7 +675,6 @@ impl Daemon {
         let conn = connection_config.connect()?;
         let daemon = Daemon {
             daemon_dir: daemon_dir.clone(),
-            blocks_dir: blocks_dir.clone(),
             network,
             connection_config,
             conn: Mutex::new(conn),
@@ -748,7 +746,6 @@ impl Daemon {
     pub fn reconnect(&self) -> Result<Daemon> {
         Ok(Daemon {
             daemon_dir: self.daemon_dir.clone(),
-            blocks_dir: self.blocks_dir.clone(),
             network: self.network,
             connection_config: self.connection_config.clone(),
             conn: Mutex::new(self.conn.lock().unwrap().reconnect()?),
@@ -761,42 +758,6 @@ impl Daemon {
             conn_recycle: self.conn_recycle.clone(),
             proxy_rpc: self.proxy_rpc.clone(),
         })
-    }
-
-    #[trace]
-    pub fn list_blk_files(&self) -> Result<Vec<PathBuf>> {
-        let path = self.blocks_dir.join("blk*.dat");
-        debug!("listing block files at {:?}", path);
-        let mut paths: Vec<PathBuf> = glob::glob(path.to_str().unwrap())
-            .chain_err(|| "failed to list blk*.dat files")?
-            .map(|res| res.unwrap())
-            .collect();
-        paths.sort();
-        Ok(paths)
-    }
-
-    /// bitcoind v28.0+ defaults to xor-ing all blk*.dat files with this key,
-    /// stored in the blocks dir.
-    /// See: <https://github.com/bitcoin/bitcoin/pull/28052>
-    pub fn read_blk_file_xor_key(&self) -> Result<Option<[u8; 8]>> {
-        // From: <https://github.com/bitcoin/bitcoin/blob/v28.0/src/node/blockstorage.cpp#L1160>
-        let path = self.blocks_dir.join("xor.dat");
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err).chain_err(|| "failed to read daemon xor.dat file"),
-        };
-        let xor_key: [u8; 8] = <[u8; 8]>::try_from(bytes.as_slice()).chain_err(|| {
-            format!(
-                "xor.dat unexpected length: actual: {}, expected: 8",
-                bytes.len()
-            )
-        })?;
-        Ok(Some(xor_key))
-    }
-
-    pub fn magic(&self) -> u32 {
-        self.network.magic()
     }
 
     #[trace]
@@ -1072,7 +1033,7 @@ impl Daemon {
                 Err(e) => {
                     let err_msg = format!("{e:?}");
                     if err_msg.contains("Block not found on disk")
-                       || err_msg.contains("Block not available") 
+                        || err_msg.contains("Block not available")
                     {
                         // There is a small chance the node returns the header but didn't finish to index the block
                         log::warn!("getblocks failing with: {e:?} trying {attempts} more time")

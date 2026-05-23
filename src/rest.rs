@@ -849,7 +849,7 @@ fn handle_blocking_request(
         }
         (&Method::GET, Some(&"block"), Some(hash), Some(&"txs"), start_index, None) => {
             let hash = BlockHash::from_str(hash)?;
-            
+
             // Add lightweight validation that block exists before fetching transactions,
             // to avoid expensive lookups in case of invalid block hash
             query.chain().get_block_header(&hash)

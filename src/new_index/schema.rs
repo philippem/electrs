@@ -19,9 +19,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
-use crate::{chain::{
-    BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
-}, new_index::db_metrics::RocksDbMetrics};
 use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::errors::*;
@@ -30,12 +27,16 @@ use crate::util::{
     bincode, full_hash, has_prevout, is_spendable, BlockHeaderMeta, BlockId, BlockMeta,
     BlockStatus, Bytes, HeaderEntry, HeaderList, ScriptToAddr,
 };
+use crate::{
+    chain::{BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value},
+    new_index::db_metrics::RocksDbMetrics,
+};
 
 use crate::new_index::db::{DBFlush, DBRow, ReverseScanIterator, ScanIterator, DB};
-use crate::new_index::fetch::{start_fetcher, BlockEntry, FetchFrom};
+use crate::new_index::fetch::{start_fetcher, BlockEntry};
 
 #[cfg(feature = "liquid")]
-use crate::elements::{asset, ebcompact::TxidCompat, peg};
+use crate::elements::{asset, peg};
 
 #[cfg(feature = "liquid")]
 use elements::encode::VarInt;
@@ -134,10 +135,6 @@ impl Store {
     pub fn headers(&self) -> RwLockReadGuard<'_, HeaderList> {
         self.indexed_headers.read().unwrap()
     }
-
-    pub fn done_initial_sync(&self) -> bool {
-        self.txstore_db.get(b"t").is_some()
-    }
 }
 
 type UtxoMap = HashMap<OutPoint, (BlockId, Value)>;
@@ -201,7 +198,6 @@ impl ScriptStats {
 pub struct Indexer {
     store: Arc<Store>,
     flush: DBFlush,
-    from: FetchFrom,
     iconfig: IndexerConfig,
     duration: HistogramVec,
     tip_metric: Gauge,
@@ -243,11 +239,10 @@ pub struct ChainQuery {
 
 // TODO: &[Block] should be an iterator / a queue.
 impl Indexer {
-    pub fn open(store: Arc<Store>, from: FetchFrom, config: &Config, metrics: &Metrics) -> Self {
+    pub fn open(store: Arc<Store>, config: &Config, metrics: &Metrics) -> Self {
         Indexer {
             store,
             flush: DBFlush::Disable,
-            from,
             iconfig: IndexerConfig::from(config),
             duration: metrics.histogram_vec(
                 HistogramOpts::new("index_duration", "Index update duration (in seconds)"),
@@ -357,8 +352,13 @@ impl Indexer {
 
             // Fetch the reorged blocks, then undo their history index db rows.
             // The txstore db rows are kept for reorged blocks/transactions.
-            start_fetcher(self.from, &daemon, reorged_headers, self.iconfig.block_batch_size, chain_tip_height)?
-                .map(|blocks| self.undo_index(&blocks));
+            start_fetcher(
+                &daemon,
+                reorged_headers,
+                self.iconfig.block_batch_size,
+                chain_tip_height,
+            )?
+            .map(|blocks| self.undo_index(&blocks));
         }
 
         // Single-pass: add to txstore and index to history in the same per-batch loop.
@@ -376,16 +376,18 @@ impl Indexer {
         // "D" done-marker rows. On restart, headers_to_process() re-derives which
         // blocks still need work, so partially-processed batches are re-processed safely.
         let to_process = self.headers_to_process(&new_headers);
-        debug!(
-            "processing {} blocks (add + index) using {:?}",
-            to_process.len(),
-            self.from
-        );
+        debug!("processing {} blocks (add + index)", to_process.len());
 
         let mut fetcher_count = 0;
         let to_process_total = to_process.len();
 
-        start_fetcher(self.from, &daemon, to_process, self.iconfig.block_batch_size, chain_tip_height)?.map(|blocks| {
+        start_fetcher(
+            &daemon,
+            to_process,
+            self.iconfig.block_batch_size,
+            chain_tip_height,
+        )?
+        .map(|blocks| {
             if fetcher_count % 25 == 0 && to_process_total > 20 {
                 let batch_height = blocks.last().map(|b| b.entry.height()).unwrap_or(0);
                 info!(
@@ -430,7 +432,8 @@ impl Indexer {
                 let h = last.entry.height();
                 self.sync_height.set(h as i64);
                 if chain_tip_height > 0 {
-                    self.sync_progress.set(h as f64 / chain_tip_height as f64 * 100.0);
+                    self.sync_progress
+                        .set(h as f64 / chain_tip_height as f64 * 100.0);
                 }
             }
         });
@@ -470,10 +473,6 @@ impl Indexer {
         let mut headers = self.store.indexed_headers.write().unwrap();
         headers.append(new_headers);
         assert_eq!(tip, *headers.tip());
-
-        if let FetchFrom::BlkFiles = self.from {
-            self.from = FetchFrom::Bitcoind;
-        }
 
         self.tip_metric.set(headers.best_height() as i64);
 
@@ -547,10 +546,6 @@ impl Indexer {
             index_blocks(blocks, &previous_txos_map, &self.iconfig)
         };
         rows
-    }
-
-    pub fn fetch_from(&mut self, from: FetchFrom) {
-        self.from = from;
     }
 }
 
@@ -1379,7 +1374,6 @@ fn index_transaction(
     rows: &mut Vec<DBRow>,
     iconfig: &IndexerConfig,
 ) {
-
     // persist tx confirmation row:
     //      C{txid} → "{block_height}"
     rows.push(TxConfRow::new(txid, confirmed_height).into_row());
@@ -1818,8 +1812,7 @@ impl TxEdgeRow {
     }
 
     fn key(outpoint: &OutPoint) -> Bytes {
-        bincode::serialize_little(&(b'S', full_hash(&outpoint.txid[..]), outpoint.vout))
-            .unwrap()
+        bincode::serialize_little(&(b'S', full_hash(&outpoint.txid[..]), outpoint.vout)).unwrap()
     }
 
     pub fn into_row(self) -> DBRow {
