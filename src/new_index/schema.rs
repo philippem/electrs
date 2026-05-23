@@ -260,13 +260,21 @@ impl Indexer {
     }
 
     // Headers that need any work: either not yet added to txstore or not yet indexed to history.
-    fn headers_to_process(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderEntry> {
+    fn headers_to_process(&self, new_headers: &[HeaderEntry]) -> Vec<HeaderWork> {
         let added = self.store.added_blockhashes.read().unwrap();
         let indexed = self.store.indexed_blockhashes.read().unwrap();
         new_headers
             .iter()
-            .filter(|e| !added.contains(e.hash()) || !indexed.contains(e.hash()))
-            .cloned()
+            .filter_map(|entry| {
+                let hash = entry.hash();
+                let need_txstore = !added.contains(hash);
+                let need_history = !indexed.contains(hash);
+                (need_txstore || need_history).then(|| HeaderWork {
+                    entry: entry.clone(),
+                    need_txstore,
+                    need_history,
+                })
+            })
             .collect()
     }
 
@@ -375,10 +383,12 @@ impl Indexer {
 
         let mut fetcher_count = 0;
         let to_process_total = to_process.len();
+        let headers_to_fetch = to_process.iter().map(|work| work.entry.clone()).collect();
+        let mut to_process_batches = to_process.chunks(self.iconfig.block_batch_size);
 
         start_fetcher(
             &daemon,
-            to_process,
+            headers_to_fetch,
             self.iconfig.block_batch_size,
             chain_tip_height,
         )?
@@ -394,25 +404,25 @@ impl Indexer {
             }
             fetcher_count += 1;
 
+            let to_process_batch = to_process_batches.next().unwrap();
+
             // Add blocks not yet in txstore (idempotent: crash recovery skips already-added blocks)
-            let to_add: Vec<_> = {
-                let added = self.store.added_blockhashes.read().unwrap();
-                blocks
-                    .iter()
-                    .filter(|b| !added.contains(b.entry.hash()))
-                    .cloned()
-                    .collect()
-            };
+            let to_add: Vec<_> = blocks
+                .iter()
+                .zip_eq(to_process_batch.iter())
+                .filter(|(_, work)| work.need_txstore)
+                .map(|(block, _)| block)
+                .cloned()
+                .collect();
 
             // Index blocks not yet in history (O rows for to_add are now in the write buffer)
-            let to_index: Vec<_> = {
-                let indexed = self.store.indexed_blockhashes.read().unwrap();
-                blocks
-                    .iter()
-                    .filter(|b| !indexed.contains(b.entry.hash()))
-                    .cloned()
-                    .collect()
-            };
+            let to_index: Vec<_> = blocks
+                .iter()
+                .zip_eq(to_process_batch.iter())
+                .filter(|(_, work)| work.need_history)
+                .map(|(block, _)| block)
+                .cloned()
+                .collect();
 
             if !to_add.is_empty() || !to_index.is_empty() {
                 let _batch_timer = self.start_timer("batch_total");
@@ -432,6 +442,7 @@ impl Indexer {
                 }
             }
         });
+        assert!(to_process_batches.next().is_none());
 
         // Compact after all add+index work is done, not between passes.
         self.start_auto_compactions(&self.store.txstore_db);
@@ -1203,6 +1214,12 @@ fn load_blockheaders(db: &DB) -> HashMap<BlockHash, BlockHeader> {
             (key, value)
         })
         .collect()
+}
+
+struct HeaderWork {
+    entry: HeaderEntry,
+    need_txstore: bool,
+    need_history: bool,
 }
 
 fn add_block(block_entry: &BlockEntry, iconfig: &IndexerConfig) -> Vec<DBRow> {
