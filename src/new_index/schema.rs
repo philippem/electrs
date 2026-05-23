@@ -478,7 +478,11 @@ impl Indexer {
         // TODO: skip orphaned blocks?
         let rows = {
             let _timer = self.start_timer("add_process");
-            add_blocks(blocks, &self.iconfig)
+            blocks
+                .par_iter() // serialization is CPU-intensive
+                .map(|b| add_block(b, &self.iconfig))
+                .flatten()
+                .collect()
         };
         {
             let _timer = self.start_timer("add_write");
@@ -549,7 +553,12 @@ impl Indexer {
                 panic!("cannot index block {} (missing from store)", blockhash);
             }
         }
-        index_blocks(blocks, &previous_txos_by_block, &self.iconfig)
+        blocks
+            .par_iter() // serialization is CPU-intensive
+            .zip_eq(&previous_txos_by_block)
+            .map(|(b, previous_txos)| index_block(b, previous_txos, &self.iconfig))
+            .flatten()
+            .collect()
     }
 }
 
@@ -1196,33 +1205,31 @@ fn load_blockheaders(db: &DB) -> HashMap<BlockHash, BlockHeader> {
         .collect()
 }
 
-fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRow> {
+fn add_block(block_entry: &BlockEntry, iconfig: &IndexerConfig) -> Vec<DBRow> {
+    assert_eq!(block_entry.txids.len(), block_entry.block.txdata.len());
+    let mut rows = vec![];
+    let blockhash = full_hash(&block_entry.entry.hash()[..]);
     // persist individual transactions:
     //      T{txid} → {rawtx}
     //      O{txid}{index} → {txout}
+    for (tx, txid) in block_entry
+        .block
+        .txdata
+        .iter()
+        .zip(block_entry.txids.iter())
+    {
+        add_transaction(*txid, tx, &mut rows, iconfig);
+    }
+
     // persist block headers', block txids' and metadata rows:
     //      B{blockhash} → {header}
     //      X{blockhash} → {txid1}...{txidN}
     //      M{blockhash} → {tx_count}{size}{weight}
-    block_entries
-        .par_iter() // serialization is CPU-intensive
-        .map(|b| {
-            assert_eq!(b.txids.len(), b.block.txdata.len());
-            let mut rows = vec![];
-            let blockhash = full_hash(&b.entry.hash()[..]);
-            for (tx, txid) in b.block.txdata.iter().zip(b.txids.iter()) {
-                add_transaction(*txid, tx, &mut rows, iconfig);
-            }
-
-            rows.push(BlockRow::new_txids(blockhash, &b.txids).into_row());
-            rows.push(BlockRow::new_meta(blockhash, &BlockMeta::from(b)).into_row());
-
-            rows.push(BlockRow::new_header(&b).into_row());
-            rows.push(BlockRow::new_done(blockhash).into_row()); // mark block as "added"
-            rows
-        })
-        .flatten()
-        .collect()
+    rows.push(BlockRow::new_txids(blockhash, &block_entry.txids).into_row());
+    rows.push(BlockRow::new_meta(blockhash, &BlockMeta::from(block_entry)).into_row());
+    rows.push(BlockRow::new_header(block_entry).into_row());
+    rows.push(BlockRow::new_done(blockhash).into_row()); // mark block as "added"
+    rows
 }
 
 fn add_transaction(txid: Txid, tx: &Transaction, rows: &mut Vec<DBRow>, iconfig: &IndexerConfig) {
@@ -1298,40 +1305,38 @@ pub fn lookup_confirmations(
         .collect()
 }
 
-fn index_blocks(
-    block_entries: &[BlockEntry],
-    previous_txos_by_block: &[Vec<TxOut>],
+fn index_block(
+    block_entry: &BlockEntry,
+    previous_txos: &[TxOut],
     iconfig: &IndexerConfig,
 ) -> Vec<DBRow> {
-    block_entries
-        .par_iter() // serialization is CPU-intensive
-        .zip_eq(previous_txos_by_block)
-        .map(|(b, previous_txos)| {
-            assert_eq!(b.txids.len(), b.block.txdata.len());
-            let mut rows = vec![];
-            let height = b.entry.height() as u32;
-            let mut previous_txos = previous_txos.iter();
-            for (tx, txid) in b.block.txdata.iter().zip(b.txids.iter()) {
-                let txid_hash = full_hash(&txid[..]);
-                index_transaction(
-                    tx,
-                    txid_hash,
-                    height,
-                    &mut previous_txos,
-                    &mut rows,
-                    iconfig,
-                );
-            }
-            assert!(
-                previous_txos.next().is_none(),
-                "unexpected trailing previous txos for block {}",
-                b.entry.hash()
-            );
-            rows.push(BlockRow::new_done(full_hash(&b.entry.hash()[..])).into_row()); // mark block as "indexed"
-            rows
-        })
-        .flatten()
-        .collect()
+    assert_eq!(block_entry.txids.len(), block_entry.block.txdata.len());
+    let mut rows = vec![];
+    let height = block_entry.entry.height() as u32;
+    let mut previous_txos = previous_txos.iter();
+    for (tx, txid) in block_entry
+        .block
+        .txdata
+        .iter()
+        .zip(block_entry.txids.iter())
+    {
+        let txid_hash = full_hash(&txid[..]);
+        index_transaction(
+            tx,
+            txid_hash,
+            height,
+            &mut previous_txos,
+            &mut rows,
+            iconfig,
+        );
+    }
+    assert!(
+        previous_txos.next().is_none(),
+        "unexpected trailing previous txos for block {}",
+        block_entry.entry.hash()
+    );
+    rows.push(BlockRow::new_done(full_hash(&block_entry.entry.hash()[..])).into_row()); // mark block as "indexed"
+    rows
 }
 
 // TODO: return an iterator?
@@ -1954,7 +1959,7 @@ pub mod bench {
     }
 
     pub fn add_blocks(data: &Data) -> Vec<DBRow> {
-        super::add_blocks(&[data.block_entry.clone()], &data.iconfig)
+        super::add_block(&data.block_entry, &data.iconfig)
     }
 }
 
