@@ -66,12 +66,7 @@ fn run_server(config: Arc<Config>, salt_rwlock: Arc<RwLock<String>>) -> Result<(
     let mut tip = indexer.update(&daemon)?;
     info!("initial sync complete, tip at {}", tip);
 
-    let chain = Arc::new(ChainQuery::new(
-        Arc::clone(&store),
-        Arc::clone(&daemon),
-        &config,
-        &metrics,
-    ));
+    let chain = Arc::new(ChainQuery::new(Arc::clone(&store), &config, &metrics));
 
     if let Some(ref precache_file) = config.precache_scripts {
         let precache_scripthashes = precache::scripthashes_from_file(precache_file.to_string())

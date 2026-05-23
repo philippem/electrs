@@ -103,7 +103,6 @@ impl TestRunner {
             http_addr: rand_available_addr(),
             http_socket_file: None, // XXX test with socket file or tcp?
             monitoring_addr: rand_available_addr(),
-            light_mode: false,
             address_search: true,
             index_unspendables: false,
             enable_mining_rest: true,
@@ -153,12 +152,7 @@ impl TestRunner {
         let mut indexer = Indexer::open(Arc::clone(&store), &config, &metrics);
         let tip = indexer.update(&daemon)?;
 
-        let chain = Arc::new(ChainQuery::new(
-            Arc::clone(&store),
-            Arc::clone(&daemon),
-            &config,
-            &metrics,
-        ));
+        let chain = Arc::new(ChainQuery::new(Arc::clone(&store), &config, &metrics));
 
         let mempool = Arc::new(RwLock::new(Mempool::new(
             Arc::clone(&chain),

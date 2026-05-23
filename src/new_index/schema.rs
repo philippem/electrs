@@ -1,5 +1,4 @@
 use bitcoin::hashes::{sha256, sha256d::Hash as Sha256dHash, Hash};
-use bitcoin::hex::FromHex;
 #[cfg(not(feature = "liquid"))]
 use bitcoin::merkle_tree::MerkleBlock;
 
@@ -206,7 +205,6 @@ pub struct Indexer {
 }
 
 struct IndexerConfig {
-    light_mode: bool,
     address_search: bool,
     index_unspendables: bool,
     network: Network,
@@ -218,7 +216,6 @@ struct IndexerConfig {
 impl From<&Config> for IndexerConfig {
     fn from(config: &Config) -> Self {
         IndexerConfig {
-            light_mode: config.light_mode,
             address_search: config.address_search,
             index_unspendables: config.index_unspendables,
             network: config.network_type,
@@ -231,8 +228,6 @@ impl From<&Config> for IndexerConfig {
 
 pub struct ChainQuery {
     store: Arc<Store>, // TODO: should be used as read-only
-    daemon: Arc<Daemon>,
-    light_mode: bool,
     duration: HistogramVec,
     network: Network,
 }
@@ -550,11 +545,9 @@ impl Indexer {
 }
 
 impl ChainQuery {
-    pub fn new(store: Arc<Store>, daemon: Arc<Daemon>, config: &Config, metrics: &Metrics) -> Self {
+    pub fn new(store: Arc<Store>, config: &Config, metrics: &Metrics) -> Self {
         ChainQuery {
             store,
-            daemon,
-            light_mode: config.light_mode,
             network: config.network_type,
             duration: metrics.histogram_vec(
                 HistogramOpts::new("query_duration", "Index query duration (in seconds)"),
@@ -577,16 +570,10 @@ impl ChainQuery {
 
     pub fn get_block_txids(&self, hash: &BlockHash) -> Option<Vec<Txid>> {
         let _timer = self.start_timer("get_block_txids");
-        if self.light_mode {
-            // TODO fetch block as binary from REST API instead of as hex
-            let mut blockinfo = self.daemon.getblock_raw(hash, 1).ok()?;
-            Some(serde_json::from_value(blockinfo["tx"].take()).unwrap())
-        } else {
-            self.store
-                .txstore_db
-                .get(&BlockRow::txids_key(full_hash(&hash[..])))
-                .map(|val| bincode::deserialize_little(&val).expect("failed to parse block txids"))
-        }
+        self.store
+            .txstore_db
+            .get(&BlockRow::txids_key(full_hash(&hash[..])))
+            .map(|val| bincode::deserialize_little(&val).expect("failed to parse block txids"))
     }
 
     pub fn get_block_txs(
@@ -597,62 +584,43 @@ impl ChainQuery {
     ) -> Result<Vec<Transaction>> {
         let txids = self.get_block_txids(hash).chain_err(|| "block not found")?;
         ensure!(start_index < txids.len(), "start index out of range");
-
-        let txids_with_blockhash = txids
-            .into_iter()
-            .skip(start_index)
-            .take(limit)
-            .map(|txid| (txid, *hash))
-            .collect::<Vec<_>>();
-
-        self.lookup_txns(&txids_with_blockhash)
-
-        // XXX use getblock in lightmode? a single RPC call, but would fetch all txs to get one page
-        // self.daemon.getblock(hash)?.txdata.into_iter().skip(start_index).take(limit).collect()
+        self.lookup_txns(
+            &txids
+                .into_iter()
+                .skip(start_index)
+                .take(limit)
+                .collect::<Vec<_>>(),
+        )
     }
 
     pub fn get_block_meta(&self, hash: &BlockHash) -> Option<BlockMeta> {
         let _timer = self.start_timer("get_block_meta");
-
-        if self.light_mode {
-            let blockinfo = self.daemon.getblock_raw(hash, 1).ok()?;
-            Some(serde_json::from_value(blockinfo).unwrap())
-        } else {
-            self.store
-                .txstore_db
-                .get(&BlockRow::meta_key(full_hash(&hash[..])))
-                .map(|val| bincode::deserialize_little(&val).expect("failed to parse BlockMeta"))
-        }
+        self.store
+            .txstore_db
+            .get(&BlockRow::meta_key(full_hash(&hash[..])))
+            .map(|val| bincode::deserialize_little(&val).expect("failed to parse BlockMeta"))
     }
 
     pub fn get_block_raw(&self, hash: &BlockHash) -> Option<Vec<u8>> {
         let _timer = self.start_timer("get_block_raw");
 
-        if self.light_mode {
-            let blockval = self.daemon.getblock_raw(hash, 0).ok()?;
-            let blockhex = blockval.as_str().expect("valid block from bitcoind");
-            Some(Vec::from_hex(blockhex).expect("valid block from bitcoind"))
-        } else {
-            let entry = self.header_by_hash(hash)?;
-            let meta = self.get_block_meta(hash)?;
-            let txids = self.get_block_txids(hash)?;
-            let txids_with_blockhash: Vec<_> =
-                txids.into_iter().map(|txid| (txid, *hash)).collect();
-            let raw_txs = self.lookup_raw_txns(&txids_with_blockhash).ok()?; // TODO avoid hiding all errors as None, return a Result
+        let entry = self.header_by_hash(hash)?;
+        let meta = self.get_block_meta(hash)?;
+        let txids = self.get_block_txids(hash)?;
+        let raw_txs = self.lookup_raw_txns(&txids).ok()?; // TODO avoid hiding all errors as None, return a Result
 
-            // Reconstruct the raw block using the header and txids,
-            // as <raw header><tx count varint><raw txs>
-            let mut raw = Vec::with_capacity(meta.size as usize);
+        // Reconstruct the raw block using the header and txids,
+        // as <raw header><tx count varint><raw txs>
+        let mut raw = Vec::with_capacity(meta.size as usize);
 
-            raw.append(&mut serialize(entry.header()));
-            raw.append(&mut serialize(&VarInt(raw_txs.len() as u64)));
+        raw.append(&mut serialize(entry.header()));
+        raw.append(&mut serialize(&VarInt(raw_txs.len() as u64)));
 
-            for mut raw_tx in raw_txs {
-                raw.append(&mut raw_tx);
-            }
-
-            Some(raw)
+        for mut raw_tx in raw_txs {
+            raw.append(&mut raw_tx);
         }
+
+        Some(raw)
     }
 
     pub fn get_block_header(&self, hash: &BlockHash) -> Option<BlockHeader> {
@@ -732,15 +700,15 @@ impl ChainQuery {
             .filter_map(|(txid, height)| Some((txid, headers.header_by_height(height)?)))
             .take(limit);
 
-        let mut txids_with_blockhash = Vec::with_capacity(limit);
+        let mut txids = Vec::with_capacity(limit);
         let mut blockids = Vec::with_capacity(limit);
         for (txid, header) in history_iter {
-            txids_with_blockhash.push((txid, *header.hash()));
+            txids.push(txid);
             blockids.push(BlockId::from(header));
         }
         drop(headers);
 
-        self.lookup_txns(&txids_with_blockhash)
+        self.lookup_txns(&txids)
             .expect("failed looking up txs in history index")
             .into_iter()
             .zip(blockids)
@@ -1057,7 +1025,7 @@ impl ChainQuery {
             .clone()
     }
 
-    pub fn lookup_txns(&self, txids: &[(Txid, BlockHash)]) -> Result<Vec<Transaction>> {
+    pub fn lookup_txns(&self, txids: &[Txid]) -> Result<Vec<Transaction>> {
         let _timer = self.start_timer("lookup_txns");
         Ok(self
             .lookup_raw_txns(txids)?
@@ -1066,50 +1034,26 @@ impl ChainQuery {
             .collect())
     }
 
-    pub fn lookup_txn(&self, txid: &Txid, blockhash: Option<&BlockHash>) -> Option<Transaction> {
+    pub fn lookup_txn(&self, txid: &Txid) -> Option<Transaction> {
         let _timer = self.start_timer("lookup_txn");
-        let rawtx = self.lookup_raw_txn(txid, blockhash)?;
+        let rawtx = self.lookup_raw_txn(txid)?;
         Some(deserialize(&rawtx).expect("failed to parse Transaction"))
     }
 
-    pub fn lookup_raw_txns(&self, txids: &[(Txid, BlockHash)]) -> Result<Vec<Bytes>> {
+    pub fn lookup_raw_txns(&self, txids: &[Txid]) -> Result<Vec<Bytes>> {
         let _timer = self.start_timer("lookup_raw_txns");
-        if self.light_mode {
-            txids
-                .par_iter()
-                .map(|(txid, blockhash)| {
-                    self.lookup_raw_txn(txid, Some(blockhash))
-                        .chain_err(|| "missing tx")
-                })
-                .collect()
-        } else {
-            let keys = txids.iter().map(|(txid, _)| TxRow::key(&txid[..]));
-            self.store
-                .txstore_db
-                .multi_get(keys)
-                .into_iter()
-                .map(|val| val.unwrap().chain_err(|| "missing tx"))
-                .collect()
-        }
+        let keys = txids.iter().map(|txid| TxRow::key(&txid[..]));
+        self.store
+            .txstore_db
+            .multi_get(keys)
+            .into_iter()
+            .map(|val| val.unwrap().chain_err(|| "missing tx"))
+            .collect()
     }
 
-    pub fn lookup_raw_txn(&self, txid: &Txid, blockhash: Option<&BlockHash>) -> Option<Bytes> {
+    pub fn lookup_raw_txn(&self, txid: &Txid) -> Option<Bytes> {
         let _timer = self.start_timer("lookup_raw_txn");
-
-        if self.light_mode {
-            let queried_blockhash =
-                blockhash.map_or_else(|| self.tx_confirming_block(txid).map(|b| b.hash), |_| None);
-            let blockhash = blockhash.or_else(|| queried_blockhash.as_ref())?;
-            // TODO fetch transaction as binary from REST API instead of as hex
-            let txval = self
-                .daemon
-                .gettransaction_raw(txid, blockhash, false)
-                .ok()?;
-            let txhex = txval.as_str().expect("valid tx from bitcoind");
-            Some(Bytes::from_hex(txhex).expect("valid tx from bitcoind"))
-        } else {
-            self.store.txstore_db.get(&TxRow::key(&txid[..]))
-        }
+        self.store.txstore_db.get(&TxRow::key(&txid[..]))
     }
 
     pub fn lookup_txo(&self, outpoint: &OutPoint) -> Option<TxOut> {
@@ -1260,10 +1204,8 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
                 add_transaction(*txid, tx, &mut rows, iconfig);
             }
 
-            if !iconfig.light_mode {
-                rows.push(BlockRow::new_txids(blockhash, &b.txids).into_row());
-                rows.push(BlockRow::new_meta(blockhash, &BlockMeta::from(b)).into_row());
-            }
+            rows.push(BlockRow::new_txids(blockhash, &b.txids).into_row());
+            rows.push(BlockRow::new_meta(blockhash, &BlockMeta::from(b)).into_row());
 
             rows.push(BlockRow::new_header(&b).into_row());
             rows.push(BlockRow::new_done(blockhash).into_row()); // mark block as "added"
@@ -1274,9 +1216,7 @@ fn add_blocks(block_entries: &[BlockEntry], iconfig: &IndexerConfig) -> Vec<DBRo
 }
 
 fn add_transaction(txid: Txid, tx: &Transaction, rows: &mut Vec<DBRow>, iconfig: &IndexerConfig) {
-    if !iconfig.light_mode {
-        rows.push(TxRow::new(txid, tx).into_row());
-    }
+    rows.push(TxRow::new(txid, tx).into_row());
 
     let txid = full_hash(&txid[..]);
     for (txo_index, txo) in tx.output.iter().enumerate() {
@@ -1961,7 +1901,6 @@ pub mod bench {
     impl Data {
         pub fn new(block: Block) -> Data {
             let iconfig = IndexerConfig {
-                light_mode: false,
                 address_search: false,
                 index_unspendables: false,
                 network: crate::chain::Network::Regtest,
@@ -1992,6 +1931,8 @@ pub mod bench {
 
 #[cfg(test)]
 mod tests {
+    use bitcoin::hex::FromHex;
+
     use super::*;
 
     #[test]

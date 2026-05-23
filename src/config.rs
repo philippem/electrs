@@ -34,7 +34,6 @@ pub struct Config {
     pub http_addr: SocketAddr,
     pub http_socket_file: Option<PathBuf>,
     pub monitoring_addr: SocketAddr,
-    pub light_mode: bool,
     pub address_search: bool,
     pub index_unspendables: bool,
     pub enable_mining_rest: bool,
@@ -193,11 +192,6 @@ impl Config {
                     .long("monitoring-addr")
                     .help("Prometheus monitoring 'addr:port' to listen on (default: 127.0.0.1:4224 for mainnet, 127.0.0.1:14224 for testnet3 and 127.0.0.1:44224 for testnet4 and 127.0.0.1:24224 for regtest)")
                     .takes_value(true),
-            )
-            .arg(
-                Arg::with_name("light_mode")
-                    .long("lightmode")
-                    .help("Enable light mode for reduced storage")
             )
             .arg(
                 Arg::with_name("address_search")
@@ -537,7 +531,6 @@ impl Config {
             http_addr,
             http_socket_file,
             monitoring_addr,
-            light_mode: m.is_present("light_mode"),
             address_search: m.is_present("address_search"),
             index_unspendables: m.is_present("index_unspendables"),
             enable_mining_rest: m.is_present("enable_mining_rest"),

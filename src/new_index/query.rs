@@ -150,14 +150,14 @@ impl Query {
     #[trace]
     pub fn lookup_txn(&self, txid: &Txid) -> Option<Transaction> {
         self.chain
-            .lookup_txn(txid, None)
+            .lookup_txn(txid)
             .or_else(|| self.mempool().lookup_txn(txid))
     }
 
     #[trace]
     pub fn lookup_raw_txn(&self, txid: &Txid) -> Option<Bytes> {
         self.chain
-            .lookup_raw_txn(txid, None)
+            .lookup_raw_txn(txid)
             .or_else(|| self.mempool().lookup_raw_txn(txid))
     }
 

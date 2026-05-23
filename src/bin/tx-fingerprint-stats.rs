@@ -44,7 +44,7 @@ fn main() {
         .unwrap(),
     );
 
-    let chain = ChainQuery::new(Arc::clone(&store), Arc::clone(&daemon), &config, &metrics);
+    let chain = ChainQuery::new(Arc::clone(&store), &config, &metrics);
 
     let mut indexer = Indexer::open(Arc::clone(&store), &config, &metrics);
     indexer.update(&daemon).unwrap();

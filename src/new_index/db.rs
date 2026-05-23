@@ -375,8 +375,8 @@ impl DB {
         self.write_batch(batch, flush);
     }
 
-    fn verify_compatibility(&self, config: &Config) {
-        let compatibility_bytes = bincode::serialize_little(&(DB_VERSION, config.light_mode)).unwrap();
+    fn verify_compatibility(&self, _config: &Config) {
+        let compatibility_bytes = bincode::serialize_little(&DB_VERSION).unwrap();
 
         match self.get(b"V") {
             None => self.put(b"V", &compatibility_bytes),
