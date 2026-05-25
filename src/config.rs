@@ -79,6 +79,33 @@ pub struct Config {
     /// per SST file of unbounded memory.
     pub db_cache_index_filter_blocks: bool,
 
+    /// RocksDB target_file_size_base in MB (per CF). Smaller values produce smaller
+    /// L1+ SST files, making each L0->L1 compaction faster (drains L0 quicker) at the
+    /// cost of more files and more compactions overall. Default 1024 (1 GiB) matches the
+    /// current shesek-branch tuning; try 128-256 if L0 piles up during initial sync.
+    pub db_target_file_size_mb: usize,
+
+    /// RocksDB soft_pending_compaction_bytes_limit in GiB (per CF). When the estimated
+    /// compaction backlog exceeds this, RocksDB rate-limits writes. 0 disables the limit
+    /// (current default — bulk-load behaviour). A finite value (e.g. 8) provides automatic
+    /// backpressure when compaction falls behind, preventing unbounded RSS growth.
+    pub db_soft_pending_compaction_gb: u64,
+
+    /// RocksDB hard_pending_compaction_bytes_limit in GiB (per CF). When the estimated
+    /// compaction backlog exceeds this, RocksDB stops writes entirely until compaction
+    /// catches up. 0 disables. Should be 3-4x the soft limit (e.g. 32 with soft=8).
+    pub db_hard_pending_compaction_gb: u64,
+
+    /// Application-level L0 backpressure trigger: when any data CF has at least this many
+    /// L0 files, the indexer sleeps between block chunks until L0 drops below it. 0 disables
+    /// this app-level throttle (RocksDB's own slowdown/stop still apply). Useful as a
+    /// belt-and-braces against producer outpacing compaction.
+    pub initial_sync_l0_backpressure_trigger: usize,
+
+    /// Sleep duration in milliseconds between L0 polls when application-level backpressure
+    /// is active. Polled per chunk of block_batch_size blocks in the spenttxouts path.
+    pub initial_sync_l0_backpressure_sleep_ms: u64,
+
     #[cfg(not(feature = "liquid"))]
     /// Use Bitcoin Core's REST spenttxouts endpoint to resolve spent outputs during indexing,
     /// instead of looking them up in RocksDB. Requires Bitcoin Core 30+ with -rest=1.
@@ -289,6 +316,36 @@ impl Config {
                 Arg::with_name("cache_index_filter_blocks")
                     .long("cache-index-filter-blocks")
                     .help("Store index/filter blocks in the block cache instead of on the heap. Bounds memory but allows eviction under cache pressure.")
+             ).arg(
+                Arg::with_name("db_target_file_size_mb")
+                    .long("db-target-file-size-mb")
+                    .help("RocksDB target_file_size_base in MB per CF. Smaller values speed up individual L0->L1 compactions (faster L0 drain). Default 1024.")
+                    .takes_value(true)
+                    .default_value("1024")
+             ).arg(
+                Arg::with_name("db_soft_pending_compaction_gb")
+                    .long("db-soft-pending-compaction-gb")
+                    .help("RocksDB soft_pending_compaction_bytes_limit in GiB per CF. RocksDB rate-limits writes above this. 0 disables.")
+                    .takes_value(true)
+                    .default_value("0")
+             ).arg(
+                Arg::with_name("db_hard_pending_compaction_gb")
+                    .long("db-hard-pending-compaction-gb")
+                    .help("RocksDB hard_pending_compaction_bytes_limit in GiB per CF. RocksDB stops writes above this. 0 disables.")
+                    .takes_value(true)
+                    .default_value("0")
+             ).arg(
+                Arg::with_name("initial_sync_l0_backpressure_trigger")
+                    .long("initial-sync-l0-backpressure-trigger")
+                    .help("L0 file count at which the spenttxouts indexer sleeps between block chunks until L0 drains. 0 disables app-level backpressure.")
+                    .takes_value(true)
+                    .default_value("0")
+             ).arg(
+                Arg::with_name("initial_sync_l0_backpressure_sleep_ms")
+                    .long("initial-sync-l0-backpressure-sleep-ms")
+                    .help("Poll interval in milliseconds when app-level L0 backpressure is engaged.")
+                    .takes_value(true)
+                    .default_value("250")
              ).arg(
                 Arg::with_name("zmq_addr")
                     .long("zmq-addr")
@@ -552,6 +609,11 @@ impl Config {
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
             initial_sync_batch_size: value_t_or_exit!(m, "initial_sync_batch_size", usize),
             db_cache_index_filter_blocks: m.is_present("cache_index_filter_blocks"),
+            db_target_file_size_mb: value_t_or_exit!(m, "db_target_file_size_mb", usize),
+            db_soft_pending_compaction_gb: value_t_or_exit!(m, "db_soft_pending_compaction_gb", u64),
+            db_hard_pending_compaction_gb: value_t_or_exit!(m, "db_hard_pending_compaction_gb", u64),
+            initial_sync_l0_backpressure_trigger: value_t_or_exit!(m, "initial_sync_l0_backpressure_trigger", usize),
+            initial_sync_l0_backpressure_sleep_ms: value_t_or_exit!(m, "initial_sync_l0_backpressure_sleep_ms", u64),
             #[cfg(not(feature = "liquid"))]
             use_spenttxouts: !m.is_present("no_spenttxouts"),
             zmq_addr,

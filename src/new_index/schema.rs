@@ -231,6 +231,10 @@ struct IndexerConfig {
     block_batch_size: usize,
     #[cfg(not(feature = "liquid"))]
     use_spenttxouts: bool,
+    #[cfg(not(feature = "liquid"))]
+    l0_backpressure_trigger: usize,
+    #[cfg(not(feature = "liquid"))]
+    l0_backpressure_sleep_ms: u64,
     #[cfg(feature = "liquid")]
     parent_network: crate::chain::BNetwork,
 }
@@ -244,6 +248,10 @@ impl From<&Config> for IndexerConfig {
             block_batch_size: config.initial_sync_batch_size,
             #[cfg(not(feature = "liquid"))]
             use_spenttxouts: config.use_spenttxouts,
+            #[cfg(not(feature = "liquid"))]
+            l0_backpressure_trigger: config.initial_sync_l0_backpressure_trigger,
+            #[cfg(not(feature = "liquid"))]
+            l0_backpressure_sleep_ms: config.initial_sync_l0_backpressure_sleep_ms,
             #[cfg(feature = "liquid")]
             parent_network: config.parent_network,
         }
@@ -589,33 +597,77 @@ impl Indexer {
         let processed_blocks = AtomicUsize::new(0);
         let highest_completed = AtomicUsize::new(0);
 
-        daemon.with_request_pool(|| {
-            to_process.into_par_iter().try_for_each(|work| {
-                self.process_block_spenttxouts(
-                    daemon,
-                    work,
-                    total_blocks,
-                    chain_tip_height,
-                    &processed_blocks,
-                    &highest_completed,
-                )
-            })
-        })?;
+        // Chunk so that batch-level work (write-buffer flushes, application-level
+        // L0 backpressure checks) has somewhere to land. Without chunking, the
+        // entire chain becomes one rayon parallel iterator with no opportunity
+        // to throttle the producer between batches.
+        for chunk in to_process.chunks(self.iconfig.block_batch_size) {
+            self.wait_for_l0_drain();
+            daemon.with_request_pool(|| {
+                chunk.par_iter().try_for_each(|work| {
+                    self.process_block_spenttxouts(
+                        daemon,
+                        work,
+                        total_blocks,
+                        chain_tip_height,
+                        &processed_blocks,
+                        &highest_completed,
+                    )
+                })
+            })?;
+        }
 
         Ok(())
+    }
+
+    /// Block until both data CFs are below the configured L0 backpressure trigger.
+    /// No-op when the trigger is 0 (RocksDB's own slowdown/stop still apply).
+    #[cfg(not(feature = "liquid"))]
+    fn wait_for_l0_drain(&self) {
+        let trigger = self.iconfig.l0_backpressure_trigger as u64;
+        if trigger == 0 {
+            return;
+        }
+        let sleep = std::time::Duration::from_millis(self.iconfig.l0_backpressure_sleep_ms);
+        let start = std::time::Instant::now();
+        let mut slept_once = false;
+        loop {
+            let tx_l0 = self.store.txstore_db.l0_file_count();
+            let hist_l0 = self.store.history_db.l0_file_count();
+            let max_l0 = tx_l0.max(hist_l0);
+            if max_l0 < trigger {
+                if slept_once {
+                    info!(
+                        "L0 backpressure released after {:?} (txstore={} history={})",
+                        start.elapsed(),
+                        tx_l0,
+                        hist_l0
+                    );
+                }
+                return;
+            }
+            if !slept_once {
+                info!(
+                    "L0 backpressure engaged: txstore={} history={} trigger={}",
+                    tx_l0, hist_l0, trigger
+                );
+                slept_once = true;
+            }
+            std::thread::sleep(sleep);
+        }
     }
 
     #[cfg(not(feature = "liquid"))]
     fn process_block_spenttxouts(
         &self,
         daemon: &Daemon,
-        work: HeaderWork,
+        work: &HeaderWork,
         total_blocks: usize,
         chain_tip_height: usize,
         processed_blocks: &AtomicUsize,
         highest_completed: &AtomicUsize,
     ) -> Result<()> {
-        let block_entry = fetch_block_entry(daemon, work.entry)?;
+        let block_entry = fetch_block_entry(daemon, work.entry.clone())?;
 
         if work.need_txstore {
             self.store
@@ -2199,6 +2251,12 @@ pub mod bench {
                 index_unspendables: false,
                 network: crate::chain::Network::Regtest,
                 block_batch_size: 250,
+                #[cfg(not(feature = "liquid"))]
+                use_spenttxouts: false,
+                #[cfg(not(feature = "liquid"))]
+                l0_backpressure_trigger: 0,
+                #[cfg(not(feature = "liquid"))]
+                l0_backpressure_sleep_ms: 250,
             };
             let height = 702861;
             let hash = block.block_hash();

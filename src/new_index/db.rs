@@ -172,6 +172,16 @@ impl DB {
         self.db.raw_iterator_cf_opt(self.cf(), opts)
     }
 
+    /// Number of L0 SST files currently in this CF. Used by the indexer's
+    /// app-level backpressure to throttle the producer when compaction lags.
+    pub fn l0_file_count(&self) -> u64 {
+        self.db
+            .property_int_value_cf(self.cf(), "rocksdb.num-files-at-level0")
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+    }
+
     pub fn iter_scan(&self, prefix: &[u8]) -> ScanIterator<'_> {
         let iter = if prefix.len() >= 33 {
             self.db.prefix_iterator_cf(self.cf(), prefix)
@@ -494,7 +504,7 @@ fn data_cf_options(config: &Config, shared_cache: &rocksdb::Cache) -> rocksdb::O
     cf_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     cf_opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
     cf_opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-    cf_opts.set_target_file_size_base(1_073_741_824);
+    cf_opts.set_target_file_size_base((config.db_target_file_size_mb as u64) * 1024 * 1024);
     // Bulk-load compaction: allow L0 files to accumulate to a bounded limit
     // before compacting. This reduces write amplification compared to the
     // default trigger of 4, while keeping the file count — and therefore
@@ -518,8 +528,15 @@ fn data_cf_options(config: &Config, shared_cache: &rocksdb::Cache) -> rocksdb::O
     cf_opts.set_level_zero_file_num_compaction_trigger(L0_BULK_TRIGGER);
     cf_opts.set_level_zero_slowdown_writes_trigger(L0_BULK_TRIGGER * 3);
     cf_opts.set_level_zero_stop_writes_trigger(L0_BULK_TRIGGER * 4);
-    cf_opts.set_hard_pending_compaction_bytes_limit(0);
-    cf_opts.set_soft_pending_compaction_bytes_limit(0);
+    // 0 disables the limit (preserves the bulk-load default). Set a finite value via
+    // --db-{soft,hard}-pending-compaction-gb to engage RocksDB's automatic write
+    // throttling when the compaction backlog grows past the threshold.
+    cf_opts.set_soft_pending_compaction_bytes_limit(
+        (config.db_soft_pending_compaction_gb as usize) << 30,
+    );
+    cf_opts.set_hard_pending_compaction_bytes_limit(
+        (config.db_hard_pending_compaction_gb as usize) << 30,
+    );
 
     // Configure write buffer size (not set by increase_parallelism)
     cf_opts.set_write_buffer_size(config.db_write_buffer_size_mb * 1024 * 1024);

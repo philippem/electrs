@@ -126,6 +126,11 @@ impl TestRunner {
             db_write_buffer_size_mb: 256,
             initial_sync_batch_size: 250,
             db_cache_index_filter_blocks: false,
+            db_target_file_size_mb: 1024,
+            db_soft_pending_compaction_gb: 0,
+            db_hard_pending_compaction_gb: 0,
+            initial_sync_l0_backpressure_trigger: 0,
+            initial_sync_l0_backpressure_sleep_ms: 250,
             #[cfg(not(feature = "liquid"))]
             use_spenttxouts: true,
             //#[cfg(feature = "electrum-discovery")]
