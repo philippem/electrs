@@ -6,6 +6,8 @@ use crate::config::Config;
 use crate::errors;
 use crate::new_index::{compute_script_hash, Query, SpendingInput, Utxo};
 #[cfg(feature = "liquid")]
+use crate::new_index::AssetRegistryStatus;
+#[cfg(feature = "liquid")]
 use crate::util::optional_value_for_newer_blocks;
 use crate::util::{
     create_socket, electrum_merkle, extract_tx_prevouts, get_innerscripts, get_tx_fee, has_prevout,
@@ -33,7 +35,9 @@ use electrs_macros::trace;
 
 #[cfg(feature = "liquid")]
 use {
-    crate::elements::{ebcompact::*, peg::PegoutValue, AssetSorting, IssuanceValue},
+    crate::elements::{
+        ebcompact::*, peg::PegoutValue, AssetSorting, IssuanceValue, RegistryError,
+    },
     elements::{encode, secp256k1_zkp as zkp, AssetId},
 };
 
@@ -566,6 +570,13 @@ fn spawn_conn(
             if let Some(ref origins) = config.cors {
                 resp.headers_mut()
                     .insert("Access-Control-Allow-Origin", origins.parse().unwrap());
+                #[cfg(feature = "liquid")]
+                resp.headers_mut().insert(
+                    "Access-Control-Expose-Headers",
+                    "X-Asset-Registry-Status, X-Total-Results"
+                        .parse()
+                        .unwrap(),
+                );
             }
             Ok::<_, hyper::Error>(resp)
         }
@@ -678,12 +689,25 @@ impl Handle {
     }
 }
 
-/// Whether `uri` addresses the block template endpoint, the one route handled on the async
+/// Whether `uri` addresses the block template endpoint, one of the routes handled on the async
 /// runtime rather than on the blocking pool (see `handle_request`). Matched exactly the way
 /// the router below matches it, so the two cannot drift apart.
 fn is_block_template_request(method: &Method, uri: &hyper::Uri) -> bool {
     let mut path = uri.path().split('/').skip(1);
     *method == Method::GET && path.next() == Some("block-template") && path.next().is_none()
+}
+
+#[cfg(feature = "liquid")]
+fn is_asset_registry_request(method: &Method, uri: &hyper::Uri) -> bool {
+    if *method != Method::GET {
+        return false;
+    }
+
+    let path: Vec<&str> = uri.path().split('/').skip(1).collect();
+    matches!(
+        path.as_slice(),
+        ["assets", "registry"] | ["asset", _] | ["asset", _, "supply", "decimal"]
+    )
 }
 
 /// Dispatch a request, keeping blocking work off the async worker threads.
@@ -695,9 +719,8 @@ fn is_block_template_request(method: &Method, uri: &hyper::Uri) -> bool {
 /// such as `GET /blocks/tip/height` stop being served. Moving them to the blocking pool
 /// keeps the runtime free to answer everything else.
 ///
-/// The block template endpoint is the exception: it is genuinely asynchronous (concurrent
-/// callers share one in-flight daemon fetch) and already does its own blocking work on the
-/// blocking pool, so it stays on the runtime.
+/// The block template and v2 asset registry endpoints are the exceptions: they are genuinely
+/// asynchronous and already move or avoid blocking work, so they stay on the runtime.
 #[trace]
 async fn handle_request(
     method: Method,
@@ -708,6 +731,11 @@ async fn handle_request(
 ) -> Result<Response<Full<Bytes>>, HttpError> {
     if is_block_template_request(&method, &uri) {
         return handle_block_template_request(&query, &config).await;
+    }
+
+    #[cfg(feature = "liquid")]
+    if is_asset_registry_request(&method, &uri) {
+        return handle_asset_registry_request(&uri, &query).await;
     }
 
     let path = uri.path().to_string();
@@ -733,6 +761,100 @@ async fn handle_block_template_request(
         ));
     }
     getblocktemplate_response(query.getblocktemplate().await)
+}
+
+#[cfg(feature = "liquid")]
+async fn handle_asset_registry_request(
+    uri: &hyper::Uri,
+    query: &Query,
+) -> Result<Response<Full<Bytes>>, HttpError> {
+    let path: Vec<&str> = uri.path().split('/').skip(1).collect();
+    let query_params = match uri.query() {
+        Some(value) => form_urlencoded::parse(value.as_bytes())
+            .into_owned()
+            .collect::<HashMap<String, String>>(),
+        None => HashMap::new(),
+    };
+
+    match path.as_slice() {
+        ["assets", "registry"] => {
+            let start_index: usize = query_params
+                .get("start_index")
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+
+            let limit: usize = query_params
+                .get("limit")
+                .and_then(|n| n.parse().ok())
+                .map(|n: usize| n.min(ASSETS_MAX_PER_PAGE))
+                .unwrap_or(ASSETS_PER_PAGE);
+
+            let sorting = AssetSorting::from_query_params(&query_params)?;
+            let (total_num, assets) = query
+                .list_registry_assets(start_index, limit, sorting)
+                .await
+                .map_err(HttpError::from_registry_error)?;
+
+            Ok(Response::builder()
+                // Disable caching because we don't currently support caching with query string params
+                .header("Cache-Control", "no-store")
+                .header("Content-Type", "application/json")
+                .header("X-Total-Results", total_num.to_string())
+                .body(Full::new(Bytes::from(serde_json::to_string(&assets)?)))
+                .unwrap())
+        }
+        ["asset", asset_str] => {
+            let asset_id = AssetId::from_str(asset_str)?;
+            let lookup = query.lookup_asset(&asset_id).await?;
+            let degraded = matches!(
+                &lookup.registry_status,
+                AssetRegistryStatus::Unavailable(_)
+            );
+            let asset_entry = lookup
+                .asset
+                .ok_or_else(|| HttpError::not_found("Asset id not found".to_string()))?;
+
+            let mut response = json_response_no_store(asset_entry, StatusCode::OK)?;
+            if degraded {
+                response.headers_mut().insert(
+                    "X-Asset-Registry-Status",
+                    "unavailable".parse().unwrap(),
+                );
+            }
+            Ok(response)
+        }
+        ["asset", asset_str, "supply", "decimal"] => {
+            let asset_id = AssetId::from_str(asset_str)?;
+            let lookup = query.lookup_asset(&asset_id).await?;
+            let registry_error = match lookup.registry_status {
+                AssetRegistryStatus::Unavailable(error) => Some(error),
+                _ => None,
+            };
+            let asset_entry = lookup
+                .asset
+                .ok_or_else(|| HttpError::not_found("Asset id not found".to_string()))?;
+            let supply = asset_entry
+                .supply()
+                .ok_or_else(|| HttpError::from("Asset supply is blinded".to_string()))?;
+            let precision = asset_entry.precision();
+
+            if precision > 0 {
+                http_message(
+                    StatusCode::OK,
+                    format_decimal_amount(supply, precision),
+                    TTL_SHORT,
+                )
+            } else if let Some(error) = registry_error {
+                Err(HttpError::from_registry_error(error))
+            } else {
+                http_message(StatusCode::OK, supply.to_string(), TTL_SHORT)
+            }
+        }
+        _ => Err(HttpError::not_found(format!(
+            "endpoint does not exist {:?}",
+            uri.path()
+        ))),
+    }
 }
 
 /// The synchronous body of the router. Always invoked from the blocking pool by
@@ -1216,43 +1338,8 @@ fn handle_blocking_request(
             json_response(query.estimate_fee_map(), TTL_SHORT)
         }
 
-        // NOTE: `GET /block-template` is intercepted by `handle_request` before reaching
-        // here, because it is the only asynchronous handler. See `is_block_template_request`.
-        #[cfg(feature = "liquid")]
-        (&Method::GET, Some(&"assets"), Some(&"registry"), None, None, None) => {
-            let start_index: usize = query_params
-                .get("start_index")
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0);
-
-            let limit: usize = query_params
-                .get("limit")
-                .and_then(|n| n.parse().ok())
-                .map(|n: usize| n.min(ASSETS_MAX_PER_PAGE))
-                .unwrap_or(ASSETS_PER_PAGE);
-
-            let sorting = AssetSorting::from_query_params(&query_params)?;
-
-            let (total_num, assets) = query.list_registry_assets(start_index, limit, sorting)?;
-
-            Ok(Response::builder()
-                // Disable caching because we don't currently support caching with query string params
-                .header("Cache-Control", "no-store")
-                .header("Content-Type", "application/json")
-                .header("X-Total-Results", total_num.to_string())
-                .body(Full::new(Bytes::from(serde_json::to_string(&assets)?)))
-                .unwrap())
-        }
-
-        #[cfg(feature = "liquid")]
-        (&Method::GET, Some(&"asset"), Some(asset_str), None, None, None) => {
-            let asset_id = AssetId::from_str(asset_str)?;
-            let asset_entry = query
-                .lookup_asset(&asset_id)?
-                .ok_or_else(|| HttpError::not_found("Asset id not found".to_string()))?;
-
-            json_response(asset_entry, TTL_SHORT)
-        }
+        // NOTE: asynchronous endpoints are intercepted by `handle_request` before reaching
+        // this synchronous router. See the route classifiers above.
 
         #[cfg(feature = "liquid")]
         (&Method::GET, Some(&"asset"), Some(asset_str), Some(&"txs"), None, None) => {
@@ -1316,23 +1403,15 @@ fn handle_blocking_request(
         }
 
         #[cfg(feature = "liquid")]
-        (&Method::GET, Some(&"asset"), Some(asset_str), Some(&"supply"), param, None) => {
+        (&Method::GET, Some(&"asset"), Some(asset_str), Some(&"supply"), None, None) => {
             let asset_id = AssetId::from_str(asset_str)?;
             let asset_entry = query
-                .lookup_asset(&asset_id)?
+                .lookup_asset_local(&asset_id)?
                 .ok_or_else(|| HttpError::not_found("Asset id not found".to_string()))?;
-
             let supply = asset_entry
                 .supply()
                 .ok_or_else(|| HttpError::from("Asset supply is blinded".to_string()))?;
-            let precision = asset_entry.precision();
-
-            if param == Some(&"decimal") && precision > 0 {
-                let supply_dec = supply as f64 / 10u32.pow(precision.into()) as f64;
-                http_message(StatusCode::OK, supply_dec.to_string(), TTL_SHORT)
-            } else {
-                http_message(StatusCode::OK, supply.to_string(), TTL_SHORT)
-            }
+            http_message(StatusCode::OK, supply.to_string(), TTL_SHORT)
         }
 
         _ => Err(HttpError::not_found(format!(
@@ -1356,6 +1435,31 @@ where
         .header("Cache-Control", format!("public, max-age={:}", ttl))
         .body(Full::new(message.into()))
         .unwrap())
+}
+
+#[cfg(feature = "liquid")]
+fn format_decimal_amount(amount: u64, precision: u8) -> String {
+    if precision == 0 {
+        return amount.to_string();
+    }
+
+    let precision = usize::from(precision);
+    let digits = amount.to_string();
+    let (whole, fractional) = if digits.len() > precision {
+        let split = digits.len() - precision;
+        (digits[..split].to_string(), digits[split..].to_string())
+    } else {
+        (
+            "0".to_string(),
+            format!("{}{}", "0".repeat(precision - digits.len()), digits),
+        )
+    };
+    let fractional = fractional.trim_end_matches('0');
+    if fractional.is_empty() {
+        whole
+    } else {
+        format!("{}.{}", whole, fractional)
+    }
 }
 
 fn json_response<T: Serialize>(value: T, ttl: u32) -> Result<Response<Full<Bytes>>, HttpError> {
@@ -1527,6 +1631,25 @@ impl HttpError {
     fn forbidden(msg: String) -> Self {
         HttpError(StatusCode::FORBIDDEN, msg)
     }
+
+    #[cfg(feature = "liquid")]
+    fn from_registry_error(error: RegistryError) -> Self {
+        let status = match &error {
+            RegistryError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            RegistryError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
+            RegistryError::HttpStatus(429 | 503)
+            | RegistryError::Overloaded(_)
+            | RegistryError::MissingLocalAsset(_) => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            RegistryError::LocalLookup(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            RegistryError::InvalidBaseUrl(_)
+            | RegistryError::Transport(_)
+            | RegistryError::HttpStatus(_)
+            | RegistryError::InvalidResponse(_) => StatusCode::BAD_GATEWAY,
+        };
+        HttpError(status, error.to_string())
+    }
 }
 
 impl From<String> for HttpError {
@@ -1621,6 +1744,10 @@ impl From<address::AddressError> for HttpError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "liquid")]
+    use crate::elements::RegistryError;
+    #[cfg(feature = "liquid")]
+    use crate::rest::is_asset_registry_request;
     use crate::rest::{is_block_template_request, HttpError};
     use crate::{errors, errors::ErrorKind};
     use http_body_util::BodyExt;
@@ -1628,20 +1755,75 @@ mod tests {
     use serde_json::Value;
     use std::collections::HashMap;
 
+    #[cfg(feature = "liquid")]
     #[test]
-    fn block_template_is_the_only_route_kept_on_the_async_runtime() {
+    fn registry_errors_map_to_gateway_statuses() {
+        assert_eq!(
+            HttpError::from_registry_error(RegistryError::Timeout("timeout".to_string())).0,
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        assert_eq!(
+            HttpError::from_registry_error(RegistryError::HttpStatus(503)).0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            HttpError::from_registry_error(RegistryError::Overloaded("busy".to_string())).0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            HttpError::from_registry_error(RegistryError::InvalidResponse("bad json".to_string()))
+                .0,
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn decimal_asset_amounts_are_formatted_without_overflow_or_rounding() {
+        assert_eq!(super::format_decimal_amount(1_500_000_000, 10), "0.15");
+        assert_eq!(
+            super::format_decimal_amount(1, 18),
+            "0.000000000000000001"
+        );
+        assert_eq!(
+            super::format_decimal_amount(u64::MAX, 18),
+            "18.446744073709551615"
+        );
+        assert_eq!(super::format_decimal_amount(0, 18), "0");
+    }
+
+    #[test]
+    fn async_routes_are_kept_on_the_async_runtime() {
         let is_async = |method: Method, uri: &str| {
-            is_block_template_request(&method, &uri.parse::<hyper::Uri>().unwrap())
+            let uri = uri.parse::<hyper::Uri>().unwrap();
+            let is_async = is_block_template_request(&method, &uri);
+            #[cfg(feature = "liquid")]
+            let is_async = is_async || is_asset_registry_request(&method, &uri);
+            is_async
         };
 
         assert!(is_async(Method::GET, "/block-template"));
         assert!(is_async(Method::GET, "/block-template?ignored=1"));
 
-        // Everything else must fall through to the blocking pool, including near-misses
-        // that the router itself would not match as the block template route.
         assert!(!is_async(Method::GET, "/block-template/"));
         assert!(!is_async(Method::GET, "/block-template/extra"));
         assert!(!is_async(Method::POST, "/block-template"));
+
+        #[cfg(feature = "liquid")]
+        {
+            assert!(is_async(Method::GET, "/assets/registry"));
+            assert!(is_async(Method::GET, "/assets/registry?limit=5"));
+            assert!(is_async(Method::GET, "/asset/asset-id"));
+            assert!(is_async(
+                Method::GET,
+                "/asset/asset-id/supply/decimal"
+            ));
+            assert!(!is_async(Method::POST, "/assets/registry"));
+            assert!(!is_async(Method::GET, "/assets/registry/"));
+            assert!(!is_async(Method::GET, "/asset/asset-id/supply"));
+            assert!(!is_async(Method::GET, "/asset/asset-id/txs"));
+        }
+
         assert!(!is_async(Method::GET, "/blocks/tip/height"));
         assert!(!is_async(Method::POST, "/tx"));
     }

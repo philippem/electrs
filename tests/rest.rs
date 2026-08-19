@@ -1,8 +1,19 @@
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::hex::FromHex;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::net;
+
+#[cfg(feature = "liquid")]
+use std::io::{Read, Write};
+#[cfg(feature = "liquid")]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(feature = "liquid")]
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "liquid")]
+use std::thread;
+#[cfg(feature = "liquid")]
+use url::Url;
 
 #[cfg(feature = "liquid")]
 use elementsd::bitcoincore_rpc::RpcApi;
@@ -28,6 +39,102 @@ fn get_json(rest_addr: net::SocketAddr, path: &str) -> Result<Value> {
 
 fn get_plain(rest_addr: net::SocketAddr, path: &str) -> Result<String> {
     Ok(get(rest_addr, path)?.into_body().read_to_string()?)
+}
+
+#[cfg(feature = "liquid")]
+fn registry_asset_response(asset_id: &str) -> Value {
+    json!({
+        "asset_id": asset_id,
+        "contract": {
+            "entity": {"domain": "example.com"},
+            "name": "Registry Asset",
+            "precision": 8,
+            "ticker": "REG",
+            "version": 1,
+            "custom_contract_field": "preserved"
+        },
+        "initial_issuer_pubkey": format!("02{}", "11".repeat(32)),
+        "initial_issuer_pubkey_source": "contract",
+        "current_issuer_pubkey": format!("02{}", "11".repeat(32)),
+        "issuer_pubkey_history": [],
+        "mutable": {"category_tags": ["stablecoin"]},
+        "admin": {"featured": true},
+        "icon": {"href": format!("/v2/assets/{}/icon/{}.png", asset_id, "22".repeat(32))},
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z"
+    })
+}
+
+#[cfg(feature = "liquid")]
+fn start_asset_registry_mock(
+    expected_requests: usize,
+) -> (
+    Url,
+    Arc<Mutex<Option<String>>>,
+    Arc<AtomicBool>,
+    Arc<AtomicUsize>,
+    thread::JoinHandle<()>,
+) {
+    let listener = net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let asset_id = Arc::new(Mutex::new(None::<String>));
+    let available = Arc::new(AtomicBool::new(true));
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let server_asset_id = Arc::clone(&asset_id);
+    let server_available = Arc::clone(&available);
+    let server_request_count = Arc::clone(&request_count);
+    let thread = thread::spawn(move || {
+        for _ in 0..expected_requests {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = vec![0u8; 8192];
+            let len = stream.read(&mut request).unwrap();
+            let request = String::from_utf8(request[..len].to_vec()).unwrap();
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap();
+            server_request_count.fetch_add(1, Ordering::SeqCst);
+
+            let (status, reason, body) = if server_available.load(Ordering::SeqCst) {
+                let asset_id = server_asset_id.lock().unwrap().clone().unwrap();
+                let asset = registry_asset_response(&asset_id);
+                let body = if path.starts_with("/api/v2/assets?") {
+                    json!({
+                        "items": [asset],
+                        "page": 1,
+                        "page_size": 25,
+                        "total_count": 1,
+                        "total_pages": 1
+                    })
+                } else {
+                    assert_eq!(path, format!("/api/v2/assets/{}", asset_id));
+                    asset
+                };
+                (200, "OK", body)
+            } else {
+                (503, "Service Unavailable", json!({"detail": "unavailable"}))
+            };
+            let body = serde_json::to_string(&body).unwrap();
+            let response = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                reason,
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+
+    (
+        Url::parse(&format!("http://{}/api", addr)).unwrap(),
+        asset_id,
+        available,
+        request_count,
+        thread,
+    )
 }
 
 #[test]
@@ -1475,6 +1582,125 @@ fn test_rest_liquid_unblinded_issuance() -> Result<()> {
     assert!(issuance_data["assetamountcommitment"].is_null());
 
     rest_handle.stop();
+    Ok(())
+}
+
+#[cfg(feature = "liquid")]
+#[test]
+fn test_rest_liquid_v2_asset_registry() -> Result<()> {
+    let (registry_url, registry_asset_id, registry_available, request_count, registry_thread) =
+        start_asset_registry_mock(4);
+    let registry_url_for_icon = registry_url.clone();
+    let (rest_handle, rest_addr, mut tester) =
+        common::init_rest_tester_with_asset_registry(registry_url, Some("*".to_string()))?;
+
+    let issuance = tester
+        .node_client()
+        .call::<Value>("issueasset", &[1.5.into(), 0.into(), false.into()])?;
+    tester.mine()?;
+    let asset_id = issuance["asset"].as_str().unwrap().to_string();
+    *registry_asset_id.lock().unwrap() = Some(asset_id.clone());
+    let expected_icon = registry_url_for_icon
+        .join(&format!(
+            "/v2/assets/{}/icon/{}.png",
+            asset_id,
+            "22".repeat(32)
+        ))
+        .unwrap()
+        .to_string();
+
+    let response = get(rest_addr, &format!("/asset/{}", asset_id))?;
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let asset: Value = response.into_body().read_json()?;
+    assert_eq!(asset["name"], "Registry Asset");
+    assert_eq!(asset["ticker"], "REG");
+    assert_eq!(asset["precision"], 8);
+    assert_eq!(asset["contract"]["custom_contract_field"], "preserved");
+    assert_eq!(asset["registry"]["status"], "active");
+    assert_eq!(asset["registry"]["mutable"]["category_tags"][0], "stablecoin");
+    assert_eq!(asset["registry"]["icon"]["href"], expected_icon);
+
+    assert_eq!(
+        get_plain(
+            rest_addr,
+            &format!("/asset/{}/supply/decimal", asset_id)
+        )?,
+        "1.5"
+    );
+    assert_eq!(
+        get_plain(rest_addr, &format!("/asset/{}/supply", asset_id))?,
+        "150000000"
+    );
+
+    let response = get(rest_addr, "/assets/registry")?;
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-total-results")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    let assets: Value = response.into_body().read_json()?;
+    assert_eq!(assets.as_array().unwrap().len(), 1);
+    assert_eq!(assets[0]["asset_id"], asset_id);
+    assert_eq!(assets[0]["registry"]["status"], "active");
+    assert_eq!(assets[0]["registry"]["icon"]["href"], expected_icon);
+
+    thread::sleep(std::time::Duration::from_millis(1100));
+    registry_available.store(false, Ordering::SeqCst);
+    let response = get(rest_addr, &format!("/asset/{}", asset_id))?;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-asset-registry-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("unavailable")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("*")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok()),
+        Some("X-Asset-Registry-Status, X-Total-Results")
+    );
+    let degraded_asset: Value = response.into_body().read_json()?;
+    assert!(degraded_asset.get("registry").is_none());
+    assert!(degraded_asset.get("name").is_none());
+
+    let response = ureq::get(&format!(
+        "http://{}/asset/{}/supply/decimal",
+        rest_addr, asset_id
+    ))
+    .config()
+    .http_status_as_error(false)
+    .build()
+    .call()?;
+    assert_eq!(response.status(), 503);
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 4);
+    rest_handle.stop();
+    registry_thread.join().unwrap();
     Ok(())
 }
 

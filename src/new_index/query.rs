@@ -16,7 +16,10 @@ use hyper::body::Bytes as BodyBytes;
 #[cfg(feature = "liquid")]
 use crate::{
     chain::AssetId,
-    elements::{ebcompact::TxidCompat, lookup_asset, AssetRegistry, AssetSorting, LiquidAsset},
+    elements::{
+        ebcompact::TxidCompat, lookup_asset, AssetMeta, AssetSorting, LiquidAsset, RegistryClient,
+        RegistryError,
+    },
 };
 
 const FEE_ESTIMATES_TTL: u64 = 60; // seconds
@@ -35,7 +38,22 @@ pub struct Query {
     cached_relayfee: RwLock<Option<f64>>,
     cached_block_template: BlockTemplateCache,
     #[cfg(feature = "liquid")]
-    asset_db: Option<Arc<RwLock<AssetRegistry>>>,
+    asset_registry: Option<Arc<RegistryClient>>,
+}
+
+#[cfg(feature = "liquid")]
+#[derive(Debug)]
+pub enum AssetRegistryStatus {
+    NotRequested,
+    Available,
+    NotFound,
+    Unavailable(RegistryError),
+}
+
+#[cfg(feature = "liquid")]
+pub struct AssetLookup {
+    pub asset: Option<LiquidAsset>,
+    pub registry_status: AssetRegistryStatus,
 }
 
 impl Query {
@@ -283,14 +301,14 @@ impl Query {
         mempool: Arc<RwLock<Mempool>>,
         daemon: Arc<Daemon>,
         config: Arc<Config>,
-        asset_db: Option<Arc<RwLock<AssetRegistry>>>,
+        asset_registry: Option<Arc<RegistryClient>>,
     ) -> Self {
         Query {
             chain,
             mempool,
             daemon,
             config,
-            asset_db,
+            asset_registry,
             cached_estimates: RwLock::new((HashMap::new(), None)),
             cached_relayfee: RwLock::new(None),
             cached_block_template: BlockTemplateCache::new(),
@@ -299,31 +317,88 @@ impl Query {
 
     #[cfg(feature = "liquid")]
     #[trace]
-    pub fn lookup_asset(&self, asset_id: &AssetId) -> Result<Option<LiquidAsset>> {
-        lookup_asset(&self, self.asset_db.as_ref(), asset_id, None)
+    pub fn lookup_asset_local(&self, asset_id: &AssetId) -> Result<Option<LiquidAsset>> {
+        lookup_asset(self, asset_id, None)
     }
 
     #[cfg(feature = "liquid")]
     #[trace]
-    pub fn list_registry_assets(
+    pub async fn lookup_asset(&self, asset_id: &AssetId) -> Result<AssetLookup> {
+        let mut asset = match self.lookup_asset_local(asset_id)? {
+            Some(asset) => asset,
+            None => {
+                return Ok(AssetLookup {
+                    asset: None,
+                    registry_status: AssetRegistryStatus::NotRequested,
+                })
+            }
+        };
+
+        if !matches!(asset, LiquidAsset::Issued(_)) {
+            return Ok(AssetLookup {
+                asset: Some(asset),
+                registry_status: AssetRegistryStatus::NotRequested,
+            });
+        }
+
+        let registry = match &self.asset_registry {
+            Some(registry) => registry,
+            None => {
+                return Ok(AssetLookup {
+                    asset: Some(asset),
+                    registry_status: AssetRegistryStatus::NotRequested,
+                })
+            }
+        };
+
+        let registry_status = match registry.get_asset(asset_id).await {
+            Ok(Some(registry_asset)) => match AssetMeta::from_registry_asset(registry_asset) {
+                Ok(metadata) => {
+                    if let LiquidAsset::Issued(issued) = &mut asset {
+                        issued.meta = Some(metadata);
+                    }
+                    AssetRegistryStatus::Available
+                }
+                Err(error) => AssetRegistryStatus::Unavailable(error),
+            },
+            Ok(None) => AssetRegistryStatus::NotFound,
+            Err(error) => AssetRegistryStatus::Unavailable(error),
+        };
+
+        Ok(AssetLookup {
+            asset: Some(asset),
+            registry_status,
+        })
+    }
+
+    #[cfg(feature = "liquid")]
+    #[trace]
+    pub async fn list_registry_assets(
         &self,
         start_index: usize,
         limit: usize,
         sorting: AssetSorting,
-    ) -> Result<(usize, Vec<LiquidAsset>)> {
-        let asset_db = match &self.asset_db {
+    ) -> std::result::Result<(usize, Vec<LiquidAsset>), RegistryError> {
+        let registry = match &self.asset_registry {
             None => return Ok((0, vec![])),
-            Some(db) => db.read().unwrap(),
+            Some(registry) => registry,
         };
-        let (total_num, results) = asset_db.list(start_index, limit, sorting);
+
+        let page = registry
+            .list_assets(start_index, limit, sorting)
+            .await?;
         // Attach on-chain information alongside the registry metadata
-        let results = results
+        let results = page
+            .items
             .into_iter()
-            .map(|(asset_id, metadata)| {
-                Ok(lookup_asset(&self, None, asset_id, Some(metadata))?
-                    .chain_err(|| "missing registered asset")?)
+            .map(|registry_asset| {
+                let asset_id = registry_asset.asset_id;
+                let metadata = AssetMeta::from_registry_asset(registry_asset)?;
+                lookup_asset(self, &asset_id, Some(metadata))
+                    .map_err(|error| RegistryError::LocalLookup(error.to_string()))?
+                    .ok_or(RegistryError::MissingLocalAsset(asset_id))
             })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((total_num, results))
+            .collect::<std::result::Result<Vec<_>, RegistryError>>()?;
+        Ok((page.total_count, results))
     }
 }

@@ -74,6 +74,12 @@ In addition to electrs's original configuration options, a few new options are a
 
 Additional options with the `liquid` feature:
 - `--parent-network <network>` - the parent network this chain is pegged to.
+- `--asset-registry-url <url>` - base URL for the Liquid asset registry v2 service.
+
+Asset registry timeouts can be configured in milliseconds with the
+`ELECTRS_ASSET_REGISTRY_CONNECT_TIMEOUT_MS` and
+`ELECTRS_ASSET_REGISTRY_REQUEST_TIMEOUT_MS` environment variables. They default
+to 2000 ms and 5000 ms, respectively.
 
 Additional options with the `electrum-discovery` feature:
 - `--electrum-hosts <json>` - a json map of the public hosts where the electrum server is reachable, in the [`server.features` format](https://electrum-protocol.readthedocs.io/en/latest/protocol-methods.html#server-features).

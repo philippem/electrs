@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use stderrlog;
+#[cfg(feature = "liquid")]
+use url::Url;
 
 use crate::chain::Network;
 use crate::daemon::CookieGetter;
@@ -85,7 +87,7 @@ pub struct Config {
     #[cfg(feature = "liquid")]
     pub parent_network: BNetwork,
     #[cfg(feature = "liquid")]
-    pub asset_db_path: Option<PathBuf>,
+    pub asset_registry_url: Option<Url>,
 
     #[cfg(feature = "electrum-discovery")]
     pub electrum_public_hosts: Option<crate::electrum::ServerHosts>,
@@ -321,9 +323,9 @@ impl Config {
                     .takes_value(true),
             )
             .arg(
-                Arg::with_name("asset_db_path")
-                    .long("asset-db-path")
-                    .help("Directory for liquid/elements asset db")
+                Arg::with_name("asset_registry_url")
+                    .long("asset-registry-url")
+                    .help("Base URL for the Liquid asset registry v2 service")
                     .takes_value(true),
             );
 
@@ -362,7 +364,14 @@ impl Config {
             });
 
         #[cfg(feature = "liquid")]
-        let asset_db_path = m.value_of("asset_db_path").map(PathBuf::from);
+        let asset_registry_url = m.value_of("asset_registry_url").map(|value| {
+            let url = Url::parse(value).expect("invalid asset registry URL");
+            assert!(
+                matches!(url.scheme(), "http" | "https"),
+                "asset registry URL must use http or https"
+            );
+            url
+        });
 
         let default_daemon_port = match network_type {
             #[cfg(not(feature = "liquid"))]
@@ -564,7 +573,7 @@ impl Config {
             #[cfg(feature = "liquid")]
             parent_network,
             #[cfg(feature = "liquid")]
-            asset_db_path,
+            asset_registry_url,
 
             #[cfg(feature = "electrum-discovery")]
             electrum_public_hosts,
