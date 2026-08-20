@@ -655,6 +655,7 @@ impl AssetSorting {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use elements::issuance::ContractHash;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::str::FromStr;
@@ -802,6 +803,111 @@ mod tests {
             .unwrap()
             .starts_with(&format!("GET /api/v2/assets/{} HTTP/1.1", ASSET_ID_A)));
         server.join().unwrap();
+    }
+
+    // ------------------------------------------------------------------
+    // Contract-hash invariant.
+    //
+    // Everything down to `republish()` is registry-implementation agnostic and is kept
+    // byte-identical with the same block on `new-index`, so the invariant and its fixtures
+    // cannot drift between the filesystem `AssetRegistry` and the v2 `RegistryClient`.
+    // `republish()` is the only part that knows which implementation it is talking to.
+    // ------------------------------------------------------------------
+
+    /// Contracts a registry can legitimately serve. Each omits optional keys that a typed
+    /// representation may reintroduce as explicit nulls. `full` is the control: it has
+    /// every optional key present, so it must pass under either implementation.
+    fn contract_fixtures() -> Vec<(&'static str, JsonValue)> {
+        vec![
+            (
+                "minimal",
+                json!({
+                    "entity": {"domain": "example.com"},
+                    "name": "Asset A",
+                    "precision": 8,
+                    "version": 1
+                }),
+            ),
+            (
+                "ticker only",
+                json!({
+                    "entity": {"domain": "example.com"},
+                    "name": "Asset A",
+                    "precision": 8,
+                    "ticker": "AAA",
+                    "version": 1
+                }),
+            ),
+            (
+                "unknown future key",
+                json!({
+                    "entity": {"domain": "example.com"},
+                    "name": "Asset A",
+                    "precision": 8,
+                    "version": 1,
+                    "custom_contract_field": {"nested": ["preserved", 1]}
+                }),
+            ),
+            (
+                "full",
+                json!({
+                    "entity": {"domain": "example.com"},
+                    "initial_issuer_pubkey": "02aabb",
+                    "issuer_pubkey": "02ccdd",
+                    "name": "Asset A",
+                    "precision": 8,
+                    "ticker": "AAA",
+                    "version": 1
+                }),
+            ),
+        ]
+    }
+
+    /// A Liquid asset ID commits to the contract, so whatever electrs republishes as
+    /// `meta.contract` must hash to the same `ContractHash` as the contract the registry
+    /// served. Otherwise clients that re-derive the asset ID to verify it reject the asset.
+    ///
+    /// Key ordering cannot cause a mismatch here: `from_json_contract` canonicalises
+    /// through a `BTreeMap` before hashing. Only added or dropped keys can.
+    fn assert_contract_hash_preserved(label: &str, served: &JsonValue, meta: &AssetMeta) {
+        let served = serde_json::to_string(served).unwrap();
+        let republished = serde_json::to_string(&meta.contract).unwrap();
+
+        assert_eq!(
+            ContractHash::from_json_contract(&republished).unwrap(),
+            ContractHash::from_json_contract(&served).unwrap(),
+            "[{}] republished contract no longer commits to the same asset id\n  \
+             served:      {}\n  republished: {}",
+            label,
+            served,
+            republished,
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_contract_republishing_preserves_the_asset_id() {
+        for (label, served) in contract_fixtures() {
+            let meta = republish(&served).await;
+            assert_contract_hash_preserved(label, &served, &meta);
+        }
+    }
+
+    // ---- adapter: the only implementation-specific part of the invariant above ----
+
+    /// Round-trip `served` through the v2 registry client the way a `GET /asset/:id`
+    /// request does, and return the `AssetMeta` electrs would republish.
+    async fn republish(served: &JsonValue) -> AssetMeta {
+        let mut body = asset_response(ASSET_ID_A, "Asset A", None);
+        body["contract"] = served.clone();
+
+        let (url, _requests, server) = mock_server(vec![(200, body)]);
+        let client = RegistryClient::new(url).unwrap();
+        let id = AssetId::from_str(ASSET_ID_A).unwrap();
+
+        let asset = client.get_asset(&id).await.unwrap().unwrap();
+        let meta = AssetMeta::from_registry_asset(asset).unwrap();
+        server.join().unwrap();
+        meta
     }
 
     #[tokio::test]
