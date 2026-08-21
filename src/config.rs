@@ -44,6 +44,7 @@ pub struct Config {
     pub precache_scripts: Option<String>,
     pub utxos_limit: usize,
     pub electrum_txs_limit: usize,
+    pub electrum_subscription_limit: usize,
     pub electrum_banner: String,
     pub rpc_logging: RpcLogging,
     pub zmq_addr: Option<SocketAddr>,
@@ -249,6 +250,12 @@ impl Config {
                     .long("electrum-txs-limit")
                     .help("Maximum number of transactions returned by Electrum history queries. Lookups with more results will fail.")
                     .default_value("500")
+            ).arg(
+                Arg::with_name("electrum_subscription_limit")
+                    .long("electrum-subscription-limit")
+                    .help("Maximum number of scripthash subscriptions a single Electrum connection may hold. Every subscription costs a history lookup on each new block, so an unbounded count lets one client impose unbounded recurring work. Re-subscribing to an already-tracked scripthash is always allowed. 0 = unlimited.")
+                    .default_value("10000")
+                    .takes_value(true)
             ).arg(
                 Arg::with_name("electrum_banner")
                     .long("electrum-banner")
@@ -534,6 +541,7 @@ impl Config {
             electrum_rpc_addr,
             electrum_rpc_conn_max_age,
             electrum_txs_limit: value_t_or_exit!(m, "electrum_txs_limit", usize),
+            electrum_subscription_limit: value_t_or_exit!(m, "electrum_subscription_limit", usize),
             electrum_banner,
             rpc_logging: {
                 let params = RpcLogging {

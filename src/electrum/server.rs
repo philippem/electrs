@@ -106,7 +106,9 @@ impl JsonRpcV2Error {
 fn jsonrpc_code(e: &Error) -> JsonRpcV2Error {
     match e.kind() {
         ErrorKind::InvalidParams(_) => JsonRpcV2Error::InvalidParams,
-        ErrorKind::TooPopular | ErrorKind::TooManyUtxos => JsonRpcV2Error::BadRequest,
+        ErrorKind::TooPopular
+        | ErrorKind::TooManyUtxos
+        | ErrorKind::TooManySubscriptions(_) => JsonRpcV2Error::BadRequest,
         // The daemon could not be reached (or we refused to queue for it) for a request
         // made on the client's behalf. This is a downstream failure, not a client error.
         ErrorKind::RpcError(..) | ErrorKind::DaemonBusy(_) | ErrorKind::DaemonUnavailable(_) => {
@@ -152,6 +154,14 @@ fn get_status_hash(txs: Vec<(Txid, Option<BlockId>)>, query: &Query) -> Option<F
     }
 }
 
+fn subscription_allowed(
+    status_hashes: &HashMap<Sha256dHash, Value>,
+    script_hash: &Sha256dHash,
+    limit: usize,
+) -> bool {
+    limit == 0 || status_hashes.len() < limit || status_hashes.contains_key(script_hash)
+}
+
 macro_rules! conditionally_log_rpc_event {
     ($self:ident, $event:expr) => {
         if $self.rpc_logging.enabled {
@@ -171,6 +181,7 @@ struct Connection {
     sender: SyncSender<Message>,
     stats: Arc<Stats>,
     txs_limit: usize,
+    subscription_limit: usize,
     #[cfg(feature = "electrum-discovery")]
     discovery: Option<Arc<DiscoveryManager>>,
     rpc_logging: RpcLogging,
@@ -192,6 +203,7 @@ impl Connection {
         sender: SyncSender<Message>,
         stats: Arc<Stats>,
         txs_limit: usize,
+        subscription_limit: usize,
         #[cfg(feature = "electrum-discovery")] discovery: Option<Arc<DiscoveryManager>>,
         rpc_logging: RpcLogging,
         salt: String,
@@ -205,6 +217,7 @@ impl Connection {
             sender,
             stats,
             txs_limit,
+            subscription_limit,
             #[cfg(feature = "electrum-discovery")]
             discovery,
             rpc_logging,
@@ -356,6 +369,11 @@ impl Connection {
 
     fn blockchain_scripthash_subscribe(&mut self, params: &[Value]) -> Result<Value> {
         let script_hash = hash_from_value(params.get(0))?;
+
+        ensure!(
+            subscription_allowed(&self.status_hashes, &script_hash, self.subscription_limit),
+            ErrorKind::TooManySubscriptions(self.subscription_limit)
+        );
 
         let history_txids = get_history(&self.query, &script_hash[..], self.txs_limit)?;
         let status_hash = get_status_hash(history_txids, &self.query)
@@ -1170,6 +1188,7 @@ impl RPC {
 
         let rpc_addr = config.electrum_rpc_addr;
         let txs_limit = config.electrum_txs_limit;
+        let subscription_limit = config.electrum_subscription_limit;
         let conn_max_age = config.electrum_rpc_conn_max_age;
 
         RPC {
@@ -1220,6 +1239,7 @@ impl RPC {
                             sender,
                             stats,
                             txs_limit,
+                            subscription_limit,
                             #[cfg(feature = "electrum-discovery")]
                             discovery,
                             rpc_logging,
@@ -1293,6 +1313,44 @@ mod tests {
             result,
             "d474826bbd126d38bdfb1e61bf727a2d9a306ea1645071faf2638cc3891a2b30"
         );
+    }
+
+    fn tracking(count: usize) -> HashMap<Sha256dHash, Value> {
+        (0..count)
+            .map(|i| (scripthash(i as u64), Value::Null))
+            .collect()
+    }
+
+    fn scripthash(seed: u64) -> Sha256dHash {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        Sha256dHash::from_byte_array(bytes)
+    }
+
+    #[test]
+    fn subscription_limit_of_zero_is_unlimited() {
+        let tracked = tracking(1_000);
+        assert!(subscription_allowed(&tracked, &scripthash(200), 0));
+    }
+
+    #[test]
+    fn subscription_allowed_below_the_limit() {
+        let tracked = tracking(3);
+        assert!(subscription_allowed(&tracked, &scripthash(200), 4));
+    }
+
+    #[test]
+    fn new_subscription_refused_at_the_limit() {
+        let tracked = tracking(4);
+        assert!(!subscription_allowed(&tracked, &scripthash(200), 4));
+        assert!(!subscription_allowed(&tracked, &scripthash(200), 2));
+    }
+
+    #[test]
+    fn resubscribing_to_a_tracked_scripthash_is_allowed_at_the_limit() {
+        let tracked = tracking(4);
+        assert!(subscription_allowed(&tracked, &scripthash(0), 4));
+        assert!(subscription_allowed(&tracked, &scripthash(3), 4));
     }
 
     #[test]

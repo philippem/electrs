@@ -29,6 +29,11 @@ error_chain! {
             display("Too many unspent outputs")
         }
 
+        TooManySubscriptions(limit: usize) {
+            description("Too many subscriptions")
+            display("Too many subscriptions on this connection (limit: {})", limit)
+        }
+
         InvalidParams(msg: String) {
             description("Invalid RPC params")
             display("{}", msg)

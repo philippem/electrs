@@ -113,6 +113,7 @@ impl TestRunner {
             precache_scripts: None,
             utxos_limit: 100,
             electrum_txs_limit: 100,
+            electrum_subscription_limit: 10_000,
             electrum_banner: "".into(),
             rpc_logging: RpcLogging::default(),
             zmq_addr: None,
