@@ -1354,6 +1354,13 @@ mod tests {
     }
 
     #[test]
+    fn too_many_subscriptions_is_a_bad_request() {
+        let error = ErrorKind::TooManySubscriptions(4).into();
+        assert!(jsonrpc_code(&error) == JsonRpcV2Error::BadRequest);
+        assert_eq!(jsonrpc_code(&error).into_i16(), 1);
+    }
+
+    #[test]
     fn connection_lifetime_is_disabled_without_max_age() {
         assert_eq!(connection_lifetime(None), None);
         assert_eq!(connection_lifetime(Some(Duration::ZERO)), None);
