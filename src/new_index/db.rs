@@ -98,7 +98,20 @@ impl DB {
         db_opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         db_opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         db_opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
-        db_opts.set_target_file_size_base(1_073_741_824);
+        // Keep target_file_size_base well below max_bytes_for_level_base. RocksDB's own
+        // default for the latter is 256 MiB; with 1 GiB SST files L1 could never hold even
+        // one file within target, so it sat permanently over-target and
+        // estimate-pending-compaction-bytes grew without bound (observed: 1.6 TB of debt
+        // against 216 GB of live data during a mainnet sync).
+        db_opts.set_target_file_size_base((config.db_target_file_size_mb as u64) * 1024 * 1024);
+        db_opts.set_max_bytes_for_level_base(
+            (config.db_max_bytes_for_level_base_mb as u64) * 1024 * 1024,
+        );
+        // Size levels from the bottom up. Static leveling lets the lower levels run well
+        // over target during a bulk load (observed: 216 GB of live data occupying 968 GB
+        // on disk, 4.5x amplification); dynamic leveling bounds that to roughly 1.11x.
+        // RocksDB fixes this at creation time, so it only applies to a fresh database.
+        db_opts.set_level_compaction_dynamic_level_bytes(config.db_dynamic_level_bytes);
         // L0 compaction triggers are left at RocksDB defaults (4/20/36) here.
         // After open, apply_bulk_load_triggers() widens them for initial sync
         // when the full-compaction sentinel 'F' is absent.
@@ -172,7 +185,7 @@ impl DB {
         let key = b"F".to_vec();
         if db.get(&key).is_none() {
             info!("sentinel 'F' absent in {:?} — widening L0 triggers for bulk load", path);
-            db.apply_bulk_load_triggers();
+            db.apply_bulk_load_triggers(config);
         } else {
             info!("sentinel 'F' present in {:?} — using steady-state L0 triggers", path);
         }
@@ -192,7 +205,7 @@ impl DB {
         info!("finished full compaction on {:?} in elapsed='{:.1?}'", self.db, elapsed);
     }
 
-    fn apply_bulk_load_triggers(&self) {
+    fn apply_bulk_load_triggers(&self, config: &Config) {
         // Allow L0 files to accumulate before compacting, reducing write
         // amplification compared to the default trigger of 4, while keeping the
         // file count — and therefore bloom-filter memory and lookup cost — bounded.
@@ -211,12 +224,23 @@ impl DB {
         let slowdown = (L0_BULK_TRIGGER * 3).to_string();
         let stop = (L0_BULK_TRIGGER * 4).to_string();
 
+        // Compaction-debt backpressure. This set_options() call runs after open and
+        // overrides whatever db_opts set, so the limits must be applied here too.
+        //
+        // A value of 0 means "no limit" in RocksDB, which is what this used to pass. That
+        // deferred every level-to-level merge to the one-time full_compaction() at the end
+        // of initial sync, letting the backlog reach the terabyte range. Finite limits make
+        // RocksDB rate-limit (soft) then stall (hard) the writer, so compaction runs
+        // continuously and the backlog stays bounded.
+        let soft = ((config.db_soft_pending_compaction_gb as u64) << 30).to_string();
+        let hard = ((config.db_hard_pending_compaction_gb as u64) << 30).to_string();
+
         let opts = [
             ("level0_file_num_compaction_trigger", trigger.as_str()),
             ("level0_slowdown_writes_trigger", slowdown.as_str()),
             ("level0_stop_writes_trigger", stop.as_str()),
-            ("soft_pending_compaction_bytes_limit", "0"),
-            ("hard_pending_compaction_bytes_limit", "0"),
+            ("soft_pending_compaction_bytes_limit", soft.as_str()),
+            ("hard_pending_compaction_bytes_limit", hard.as_str()),
         ];
         self.db.set_options(&opts).unwrap();
     }

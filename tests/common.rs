@@ -129,6 +129,11 @@ impl TestRunner {
             db_block_cache_mb: 8,
             db_parallelism: 2,
             db_write_buffer_size_mb: 256,
+            db_target_file_size_mb: 128,
+            db_max_bytes_for_level_base_mb: 1024,
+            db_dynamic_level_bytes: true,
+            db_soft_pending_compaction_gb: 64,
+            db_hard_pending_compaction_gb: 512,
             initial_sync_batch_size: 250,
             db_cache_index_filter_blocks: false,
             // Test bitcoind is Core 29 which lacks the spenttxouts REST endpoint.

@@ -70,6 +70,36 @@ pub struct Config {
     /// Larger buffers = fewer flushes (less CPU) but more RAM usage
     pub db_write_buffer_size_mb: usize,
 
+    /// RocksDB target_file_size_base in MB (per database). Smaller files make each
+    /// L0->L1 compaction finish sooner, so the backlog drains continuously instead of
+    /// accumulating. Must stay well below db_max_bytes_for_level_base_mb.
+    pub db_target_file_size_mb: usize,
+
+    /// RocksDB max_bytes_for_level_base in MB (per database). Target size of L1.
+    /// RocksDB's own default is 256 MB; if target_file_size_base exceeds it, L1 is
+    /// permanently over target and pending-compaction-bytes inflates without bound.
+    pub db_max_bytes_for_level_base_mb: usize,
+
+    /// Enable RocksDB level_compaction_dynamic_level_bytes (default: true). Sizes each
+    /// level from the bottom up rather than the top down, which bounds space
+    /// amplification to roughly 1.11x instead of the 2x+ of static leveling.
+    /// IMMUTABLE: RocksDB fixes this when the database is created, so changing it only
+    /// takes effect on a database built from scratch.
+    pub db_dynamic_level_bytes: bool,
+
+    /// RocksDB soft_pending_compaction_bytes_limit in GiB (per database). RocksDB
+    /// rate-limits writes once the estimated compaction backlog exceeds this. 0 disables.
+    ///
+    /// The right value depends on how fast the machine can compact relative to how fast
+    /// the indexer writes, so the default is an empirical figure rather than a universal
+    /// one -- see the CLI help for how to tell when it is set wrong.
+    pub db_soft_pending_compaction_gb: u64,
+
+    /// RocksDB hard_pending_compaction_bytes_limit in GiB (per database). RocksDB stops
+    /// writes once the estimated compaction backlog exceeds this. 0 disables.
+    /// Hardware-dependent in the same way as the soft limit.
+    pub db_hard_pending_compaction_gb: u64,
+
     /// Number of blocks per batch during initial sync (bitcoind fetch mode).
     /// Larger batches keep more O rows in the write buffer when index() runs lookup_txos(),
     /// improving cache hit rate for outputs spent within the same batch window.
@@ -300,6 +330,34 @@ impl Config {
                     .help("RocksDB write buffer size in MB per database. RAM usage = size * max_write_buffers(2) * 3_databases")
                     .takes_value(true)
                     .default_value("256")
+             ).arg(
+                Arg::with_name("db_target_file_size_mb")
+                    .long("db-target-file-size-mb")
+                    .help("RocksDB target_file_size_base in MB per database. Smaller values make individual L0->L1 compactions finish faster, draining the backlog continuously.")
+                    .takes_value(true)
+                    .default_value("128")
+             ).arg(
+                Arg::with_name("db_max_bytes_for_level_base_mb")
+                    .long("db-max-bytes-for-level-base-mb")
+                    .help("RocksDB max_bytes_for_level_base in MB per database (target size of L1). Keep it several times db-target-file-size-mb, or L1 sits permanently over target and the compaction backlog inflates.")
+                    .takes_value(true)
+                    .default_value("1024")
+             ).arg(
+                Arg::with_name("no_dynamic_level_bytes")
+                    .long("no-dynamic-level-bytes")
+                    .help("Disable RocksDB level_compaction_dynamic_level_bytes. Enabled by default; bounds space amplification to ~1.11x. Only takes effect on a database created from scratch.")
+             ).arg(
+                Arg::with_name("db_soft_pending_compaction_gb")
+                    .long("db-soft-pending-compaction-gb")
+                    .help("RocksDB soft_pending_compaction_bytes_limit in GiB per database. RocksDB rate-limits writes above this, forcing compaction to keep up. Set too low it throttles the whole sync: watch the rocksdb_actual_delayed_write_rate metric, which is 0 when writes are not being delayed. The default is tuned for a machine that sustains a 55-65 GiB backlog per database during mainnet initial sync; slower storage wants a lower value, faster storage tolerates more. 0 disables.")
+                    .takes_value(true)
+                    .default_value("64")
+             ).arg(
+                Arg::with_name("db_hard_pending_compaction_gb")
+                    .long("db-hard-pending-compaction-gb")
+                    .help("RocksDB hard_pending_compaction_bytes_limit in GiB per database. RocksDB stops writes entirely above this -- note a hard stop reports actual_delayed_write_rate as 0, indistinguishable from healthy, so watch rocksdb_is_write_stopped instead. Must sit well above the backlog the workload actually carries, or the soft limit never gets to rate-limit and every overshoot becomes a full stall. 0 disables.")
+                    .takes_value(true)
+                    .default_value("512")
              ).arg(
                 Arg::with_name("initial_sync_batch_size")
                     .long("initial-sync-batch-size")
@@ -572,6 +630,11 @@ impl Config {
             db_block_cache_mb: value_t_or_exit!(m, "db_block_cache_mb", usize),
             db_parallelism: value_t_or_exit!(m, "db_parallelism", usize),
             db_write_buffer_size_mb: value_t_or_exit!(m, "db_write_buffer_size_mb", usize),
+            db_target_file_size_mb: value_t_or_exit!(m, "db_target_file_size_mb", usize),
+            db_max_bytes_for_level_base_mb: value_t_or_exit!(m, "db_max_bytes_for_level_base_mb", usize),
+            db_dynamic_level_bytes: !m.is_present("no_dynamic_level_bytes"),
+            db_soft_pending_compaction_gb: value_t_or_exit!(m, "db_soft_pending_compaction_gb", u64),
+            db_hard_pending_compaction_gb: value_t_or_exit!(m, "db_hard_pending_compaction_gb", u64),
             initial_sync_batch_size: value_t_or_exit!(m, "initial_sync_batch_size", usize),
             db_cache_index_filter_blocks: m.is_present("cache_index_filter_blocks"),
             #[cfg(not(feature = "liquid"))]
